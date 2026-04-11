@@ -1,0 +1,53 @@
+---
+description: Diseño modular según Ousterhout (A Philosophy of Software Design, 2ª ed.) — complejidad, módulos profundos, comentarios y nombres.
+alwaysApply: true
+---
+
+# A Philosophy of Software Design (resumen operativo)
+
+Objetivo: **reducir complejidad** (carga cognitiva, amplificación de cambios, desconocidos). La complejidad es **incremental**; cada cambio debe bajar el costo futuro, no solo “hacerlo funcionar”.
+
+## Enfoque
+
+- Preferir **programación estratégica** frente a la táctica pura: invertir en diseño limpio, nombres y abstracciones que paguen interés a largo plazo.
+- Antes de consolidar una API o estructura, **diseñar dos alternativas** y comparar simplicidad de uso y de evolución.
+
+## Módulos y abstracciones
+
+- Favorecer módulos **profundos** (poca superficie / mucha funcionalidad bien encapsulada) frente a **superficiales** (mucha ceremonia por poco valor).
+- **Ocultar información**; evitar **fugas** (detalles internos que se filtran en firmas, tipos o nombres públicos).
+- Evitar descomposición **temporal** (“paso1, paso2…”) cuando comparte información: agrupar por **capacidades** y datos que cambian juntos.
+- APIs **algo generalistas** suelen ser más profundas; la especialización puede subirse a capas superiores. Eliminar **casos especiales** cuando una abstracción más limpia los absorbe.
+- **Distinta capa, distinta abstracción**: sospechar de métodos **passthrough**, duplicación de interfaz entre capas y variables que solo atraviesan niveles.
+
+## Dónde poner la complejidad
+
+- **Empujar la complejidad hacia abajo** (dentro del módulo que tiene el contexto), no hacia los llamadores. Los defaults y decisiones razonables deben vivir cerca del dominio que las entiende.
+
+## Juntar o separar
+
+- Juntar si comparten información no obvia, si **simplifica la interfaz** conjunta, o si elimina duplicación real. Separar lo **genérico** de lo **específico** cuando el acoplamiento no aporta.
+
+## Errores y excepciones
+
+- Las excepciones añaden complejidad al flujo mental. **Redefinir errores para que no existan** cuando sea razonable; **enmascarar** o **agregar** excepciones en límites; evitar explosión de tipos de error en APIs públicas.
+
+## Comentarios
+
+- Los comentarios deben describir lo **no obvio** del código: intención, invariantes, decisiones de diseño **entre módulos**.
+- Documentar **interfaces** (comportamiento, errores, threading) con claridad. En implementación: **qué y por qué**, no un relato del **cómo** línea a línea.
+- Donde aplique al flujo de trabajo: **comentarios cerca del código** que documentan; evitar sustituir documentación con solo mensajes de commit.
+
+## Nombres y estilo
+
+- Nombres **precisos** y **consistentes**; eliminar palabras extra que no discriminen significado.
+- **Consistencia** deliberada en patrones y convenciones del proyecto.
+
+## Rendimiento y prioridades
+
+- **Medir** antes y después de optimizar; diseñar alrededor del **camino crítico** cuando importe.
+- **Decidir qué importa** y minimizar superficie de “cosas importantes”; no dispersar complejidad en todo el sistema.
+
+## Señales de alarma (revisar diseño)
+
+Passthrough innecesario, fugas de información, módulos superficiales o “classitis”, duplicación de abstracción entre capas, demasiadas excepciones en APIs, nombres vagos o inconsistentes, comentarios que repiten el código o interfaces sin contrato claro.

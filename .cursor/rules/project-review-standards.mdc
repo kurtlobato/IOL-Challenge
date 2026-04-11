@@ -1,0 +1,21 @@
+---
+description: Criterios de entrega y revisión — build/tests obligatorios, tests del núcleo, errores, concurrencia prudente, sin sobre-ingeniería ni “AI slop”.
+alwaysApply: true
+---
+
+# Estándares de entrega (IOL-Challenge)
+
+## Obligatorio (sin esto no cuenta como listo para revisar)
+
+- **Compila y los tests pasan**: no presentar código que no buildée o falle tests; corregir antes de pedir revisión.
+- **Tests exhaustivos de la lógica central**: cubrir casos borde y reglas de negocio importantes, no solo el camino feliz.
+- **Manejo de errores correcto**: errores esperados tratados de forma explícita; propagación clara en límites (API, I/O); sin tragar excepciones sin contexto.
+- **Concurrencia solo cuando aporte**: usarla si hay I/O paralelo, contención real o requisitos; no introducir paralelismo “por si acaso” ni micro-optimizar sin necesidad.
+- **Evitar sobre-ingeniería**: la solución más simple que cumpla los requisitos; abstracciones y capas solo cuando reducen complejidad real.
+- **Evitar “AI slop”**: nada de relleno genérico, patrones copiados sin encaje, o APIs verbosas innecesarias; código directo y alineado al dominio del proyecto.
+
+## Deseable (cuando encaje)
+
+- **Observabilidad y operación**: logging útil, métricas donde tengan sentido, despliegue/config razonablemente simple.
+- **Diseño defensivo en integraciones**: timeouts, pools de conexión acordes al uso, circuit breakers o límites donde haya fallos en cascada o dependencias externas.
+- **Comentarios y documentación con criterio**: pocas notas **útiles** (contratos, invariantes, decisiones no obvias) mejor que docstrings/comentarios automáticos en cada función; coherente con la regla de filosofía de diseño sobre comentarios.
