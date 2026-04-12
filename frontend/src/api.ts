@@ -5,7 +5,9 @@ export type VideoItem = {
   title: string;
   status: string;
   manifestUrl: string | null;
+  thumbnailUrl: string | null;
   errorMessage: string | null;
+  uploaderId: string | null;
   createdAt: string;
 };
 
@@ -14,6 +16,7 @@ export type CreateVideoBody = {
   originalFilename: string;
   contentType: string;
   sizeBytes: number;
+  uploaderId: string;
 };
 
 export type CreateVideoResult = {
@@ -73,5 +76,15 @@ export async function uploadToPresigned(
   });
   if (!res.ok) {
     throw new Error(`Upload failed: ${res.status} ${res.statusText}`);
+  }
+}
+
+export async function deleteVideo(id: string, uploaderId: string): Promise<void> {
+  const res = await fetch(`${API}/videos/${id}?uploaderId=${encodeURIComponent(uploaderId)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error((err as { error?: string }).error ?? res.statusText);
   }
 }

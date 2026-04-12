@@ -13,8 +13,6 @@ spring:
       hibernate:
         jdbc:
           time_zone: UTC
-  flyway:
-    enabled: true
 
 server:
   port: 8080
@@ -33,5 +31,15 @@ app:
   transcode:
     max-retries: 3
     poll-ms: 4000
+    lease-ttl-seconds: 120
+    lease-renew-seconds: 45
+    claim-lock-at-most-seconds: 45
   ffmpeg:
     command: ffmpeg
+  hls-variants:
+    - name: "480p"
+      height: 480
+      bandwidth-bps: 1000000
+    - name: "720p"
+      height: 720
+      bandwidth-bps: 3000000

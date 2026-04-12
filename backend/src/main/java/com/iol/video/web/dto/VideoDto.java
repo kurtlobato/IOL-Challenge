@@ -11,20 +11,30 @@ public record VideoDto(
     String title,
     String status,
     String manifestUrl,
+    String thumbnailUrl,
     String errorMessage,
+    String uploaderId,
     Instant createdAt) {
 
   public static VideoDto from(Video v, String playbackBaseUrl, ObjectStorageService storage) {
     String manifest = null;
+    String thumb = null;
     if (v.getStatus() == VideoStatus.READY && v.getManifestObjectKey() != null) {
       manifest = storage.publicUrlForKey(v.getManifestObjectKey(), playbackBaseUrl);
+      String thumbnailKey = v.getManifestObjectKey().replace("master.m3u8", "thumbnail.jpg");
+      thumb = storage.publicUrlForKey(thumbnailKey, playbackBaseUrl);
+    } else if (v.getStatus() == VideoStatus.PROCESSING && v.getOutputPrefix() != null) {
+      thumb =
+          storage.publicUrlForKey(v.getOutputPrefix() + "thumbnail.jpg", playbackBaseUrl);
     }
     return new VideoDto(
         v.getId(),
         v.getTitle(),
         v.getStatus().name(),
         manifest,
+        thumb,
         v.getErrorMessage(),
+        v.getUploaderId(),
         v.getCreatedAt());
   }
 }

@@ -8,4 +8,5 @@ public record CreateVideoRequest(
     @NotBlank @Size(max = 512) String title,
     @NotBlank @Size(max = 512) String originalFilename,
     @Size(max = 256) String contentType,
-    @Positive Long sizeBytes) {}
+    @Positive Long sizeBytes,
+    @Size(max = 128) String uploaderId) {}

@@ -1,22 +1,44 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   completeVideo,
   createVideo,
   getVideo,
   listVideos,
   uploadToPresigned,
+  deleteVideo,
   type VideoItem,
 } from "./api";
 import { VideoPlayer } from "./VideoPlayer";
+import { VideoHoverPreview } from "./VideoHoverPreview";
+import { formatFullUploadDateDetail, formatRelativeUploadDate } from "./formatUploadDate";
 import "./App.css";
 
 export default function App() {
   const [items, setItems] = useState<VideoItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [title, setTitle] = useState("Mi video");
+  
+  // Modal state
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [title, setTitle] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  
   const [selected, setSelected] = useState<VideoItem | null>(null);
+  const [hoverPreviewId, setHoverPreviewId] = useState<string | null>(null);
+  const hoverPreviewTimeById = useRef<Map<string, number>>(new Map());
+  const fileInputId = useId();
+
+  // Generamos un ID de usuario descartable para esta sesión/navegador
+  const [myUploaderId, setMyUploaderId] = useState<string>("");
+
+  useEffect(() => {
+    let saved = localStorage.getItem("iol_uploader_id");
+    if (!saved) {
+      saved = "user_" + Math.random().toString(36).substring(2, 10);
+      localStorage.setItem("iol_uploader_id", saved);
+    }
+    setMyUploaderId(saved);
+  }, []);
 
   const refresh = useCallback(async () => {
     const list = await listVideos();
@@ -29,7 +51,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    refresh().catch((e) => setError(String(e)));
+    refresh().catch((e) => console.error(e));
   }, [refresh]);
 
   async function handleUpload(e: React.FormEvent) {
@@ -43,12 +65,16 @@ export default function App() {
         originalFilename: file.name,
         contentType: file.type || "application/octet-stream",
         sizeBytes: file.size,
+        uploaderId: myUploaderId,
       });
       await uploadToPresigned(created.uploadUrl, file, created.method);
       await completeVideo(created.id);
       await refresh();
-      const v = await getVideo(created.id);
-      setSelected(v);
+      
+      setIsModalOpen(false); // Close on success
+      setTitle("");
+      setFile(null);
+      
       pollUntilDone(created.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -63,7 +89,6 @@ export default function App() {
     for (let i = 0; i < max; i++) {
       await new Promise((r) => setTimeout(r, delay));
       const v = await getVideo(id);
-      setSelected(v);
       if (v.status === "READY" || v.status === "FAILED") {
         await refresh();
         return;
@@ -71,70 +96,261 @@ export default function App() {
     }
   }
 
+  async function handleDelete(id: string) {
+    if (!confirm("¿Seguro que quieres eliminar este video?")) return;
+    try {
+      await deleteVideo(id, myUploaderId);
+      if (selected?.id === id) {
+        setSelected(null);
+      }
+      await refresh();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  const openModal = () => { setIsModalOpen(true); setError(null); };
+  const closeModal = () => { setIsModalOpen(false); setTitle(""); setFile(null); setError(null); };
+
   return (
-    <div className="app">
-      <header className="header">
-        <h1>IOL Video</h1>
-        <p className="sub">Subida directa a almacenamiento (pre-signed) y reproducción HLS</p>
-      </header>
+    <>
+      <nav className="navbar">
+        <div className="navbar-brand" onClick={() => setSelected(null)}>
+          <span style={{color: 'white', background: 'red', borderRadius: '4px', padding: '2px 6px', fontSize: '1rem'}}>▶</span>
+          IOL Video
+        </div>
+        <button className="btn-create" onClick={openModal}>
+          + Crear
+        </button>
+      </nav>
 
-      <section className="panel">
-        <h2>Subir video</h2>
-        <form onSubmit={handleUpload} className="form">
-          <label>
-            Título
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              disabled={loading}
-            />
-          </label>
-          <label>
-            Archivo (máx. 1 GB según API)
-            <input
-              type="file"
-              accept="video/*"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-              disabled={loading}
-            />
-          </label>
-          <button type="submit" disabled={loading || !file}>
-            {loading ? "Subiendo…" : "Subir"}
-          </button>
-        </form>
-        {error && <p className="err">{error}</p>}
-      </section>
-
-      <section className="panel">
-        <h2>Videos</h2>
-        <ul className="list">
-          {items.map((v) => (
-            <li key={v.id}>
-              <button type="button" className="linkish" onClick={() => setSelected(v)}>
-                {v.title}
-              </button>
-              <span className={`pill pill-${v.status}`}>{v.status}</span>
-              <span className="muted">{new Date(v.createdAt).toLocaleString()}</span>
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      {selected && (
-        <section className="panel">
-          <h2>Detalle</h2>
-          <p>
-            <strong>{selected.title}</strong> — {selected.status}
-          </p>
-          {selected.errorMessage && <p className="err">{selected.errorMessage}</p>}
-          {selected.status === "READY" && selected.manifestUrl && (
-            <VideoPlayer manifestUrl={selected.manifestUrl} />
+      {selected ? (
+        <main className="player-container">
+          <div className="video-section">
+            <div className="video-wrapper">
+              {selected.status === "READY" && selected.manifestUrl ? (
+                <VideoPlayer manifestUrl={selected.manifestUrl} />
+              ) : selected.status === "FAILED" ? (
+                <div style={{aspectRatio: "16/9", background: "#000", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "12px"}}>
+                  <span className="err">Error al procesar ({selected.errorMessage})</span>
+                </div>
+              ) : (
+                <div style={{aspectRatio: "16/9", background: "#000", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "12px"}}>
+                  <span style={{color: "#aaa"}}>Procesando video... ({selected.status})</span>
+                </div>
+              )}
+            </div>
+            <h1 className="player-title">{selected.title}</h1>
+            <p className="card-meta">
+              IOL Channel • {formatFullUploadDateDetail(selected.createdAt)}
+            </p>
+          </div>
+          <div className="related-section">
+            <h3 style={{marginTop: 0}}>Siguientes videos</h3>
+            <div className="related-list">
+              {items.filter((v) => v.id !== selected.id).map((v) => (
+                <div
+                  key={v.id}
+                  className={`related-row ${v.status === "READY" ? "related-row-ready" : "related-row-pending"}`}
+                  onClick={() => {
+                    if (v.status === "READY") setSelected(v);
+                  }}
+                >
+                  <div className="related-thumb">
+                    {v.thumbnailUrl ? (
+                      <>
+                        <img
+                          src={v.thumbnailUrl}
+                          alt=""
+                          onError={(e) => {
+                            e.currentTarget.style.display = "none";
+                            const fb = e.currentTarget.nextElementSibling;
+                            if (fb) fb.classList.remove("is-hidden");
+                          }}
+                        />
+                        <span className="thumb-fallback is-hidden" aria-hidden>
+                          ▶
+                        </span>
+                      </>
+                    ) : (
+                      <span className="thumb-fallback" aria-hidden>
+                        ▶
+                      </span>
+                    )}
+                  </div>
+                  <div className="related-row-text">
+                    <h4
+                      style={{
+                        margin: "0 0 4px 0",
+                        fontSize: "0.9rem",
+                        display: "-webkit-box",
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                      }}
+                    >
+                      {v.title}
+                    </h4>
+                    <span className={`pill pill-${v.status}`}>{v.status}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </main>
+      ) : (
+        <main className="dashboard">
+          {items.map((v) => {
+            const openable = v.status === "READY";
+            return (
+            <div
+              key={v.id}
+              className={`video-card ${openable ? "video-card-ready" : "video-card-pending"}`}
+              style={{ position: "relative" }}
+              onMouseEnter={() => {
+                if (openable && v.manifestUrl) setHoverPreviewId(v.id);
+              }}
+              onMouseLeave={() => setHoverPreviewId(null)}
+            >
+              <div
+                className="thumbnail"
+                onClick={() => {
+                  if (openable) setSelected(v);
+                }}
+              >
+                {v.thumbnailUrl ? (
+                  <>
+                    <img
+                      src={v.thumbnailUrl}
+                      alt=""
+                      onError={(e) => {
+                        e.currentTarget.style.display = "none";
+                        const fb = e.currentTarget.nextElementSibling;
+                        if (fb) fb.classList.remove("is-hidden");
+                      }}
+                    />
+                    <span className="thumb-fallback is-hidden" aria-hidden>
+                      ▶
+                    </span>
+                  </>
+                ) : (
+                  <span className="thumb-fallback" aria-hidden>
+                    ▶
+                  </span>
+                )}
+                {openable && v.manifestUrl && hoverPreviewId === v.id ? (
+                  <VideoHoverPreview
+                    manifestUrl={v.manifestUrl}
+                    resumeAt={hoverPreviewTimeById.current.get(v.id) ?? 0}
+                    onCommitTime={(t) => {
+                      hoverPreviewTimeById.current.set(v.id, t);
+                    }}
+                  />
+                ) : null}
+              </div>
+              <div className="card-info">
+                <div className="avatar">I</div>
+                <div className="card-text">
+                  <h3
+                    className="card-title"
+                    onClick={() => {
+                      if (openable) setSelected(v);
+                    }}
+                  >
+                    {v.title}
+                  </h3>
+                  <p className="card-meta">IOL Channel</p>
+                  <p className="card-meta">{formatRelativeUploadDate(v.createdAt)}</p>
+                  <div>
+                    <span className={`pill pill-${v.status}`}>{v.status}</span>
+                  </div>
+                </div>
+              </div>
+              {v.uploaderId === myUploaderId && (
+                <button 
+                  onClick={(e) => { e.stopPropagation(); handleDelete(v.id); }}
+                  style={{position: "absolute", top: "8px", right: "8px", background: "rgba(0,0,0,0.7)", border: "none", color: "#ff4e45", borderRadius: "50%", width: "32px", height: "32px", cursor: "pointer", zIndex: 10, display: "flex", justifyContent: "center", alignItems: "center"}}
+                  title="Eliminar mi video"
+                >
+                  <span style={{fontSize: "1.2rem"}}>🗑</span>
+                </button>
+              )}
+            </div>
+            );
+          })}
+          {items.length === 0 && (
+             <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: "40px", color: "#aaa", fontSize: "1.2rem" }}>
+                Aún no hay videos. ¡Sube el primero usando el botón Crear!
+             </div>
           )}
-          {(selected.status === "UPLOADED" || selected.status === "PROCESSING") && (
-            <p className="muted">Procesando… actualizá la lista o esperá.</p>
-          )}
-        </section>
+        </main>
       )}
-    </div>
+
+      {isModalOpen && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div className="modal-header">
+              <span>Subir vídeos</span>
+              <button className="btn-close" onClick={closeModal}>&times;</button>
+            </div>
+            
+            <div className="modal-body">
+               <div className="upload-icon-circle">⇧</div>
+               <div className="upload-text">
+                  <h3 style={{margin: "0 0 8px 0"}}>Arrastra y suelta archivos de video para subirlos</h3>
+                  <p>Tus videos se procesarán tras subirlos.</p>
+               </div>
+               
+               <form onSubmit={handleUpload} style={{width: "100%", display: "flex", flexDirection: "column", gap: "16px", maxWidth: "480px", marginTop: "12px"}}>
+                 <div className="form-group">
+                   <label>Título del video</label>
+                   <input
+                     type="text"
+                     placeholder="Añade un título"
+                     value={title}
+                     onChange={(e) => setTitle(e.target.value)}
+                     disabled={loading}
+                     required
+                   />
+                 </div>
+
+                 <div className="form-group">
+                   <span className="form-group-label">Archivo</span>
+                   <div className="file-input-wrap">
+                     <input
+                       id={fileInputId}
+                       className="file-input-native"
+                       type="file"
+                       accept="video/*"
+                       onChange={(e) => {
+                         const f = e.target.files?.[0] ?? null;
+                         setFile(f);
+                         if (f && !title) setTitle(f.name.split('.').slice(0, -1).join('.') || f.name);
+                       }}
+                       disabled={loading}
+                       required
+                     />
+                     <label htmlFor={fileInputId} className="file-input-trigger">
+                       Seleccionar archivo
+                     </label>
+                     <span className="file-input-filename" title={file?.name}>
+                       {file ? file.name : "Sin archivos seleccionados"}
+                     </span>
+                   </div>
+                 </div>
+
+                 {error && <p className="err">{error}</p>}
+                 
+                 <div style={{display: "flex", justifyContent: "center", marginTop: "16px"}}>
+                   <button type="submit" disabled={loading || !file} className="btn-primary" style={{padding: "12px 32px", fontSize: "1rem"}}>
+                     {loading ? "Subiendo..." : "Seleccionar y Subir"}
+                   </button>
+                 </div>
+               </form>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

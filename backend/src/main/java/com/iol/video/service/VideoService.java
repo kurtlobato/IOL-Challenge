@@ -9,9 +9,11 @@ import com.iol.video.web.dto.CreateVideoRequest;
 import com.iol.video.web.dto.CreateVideoResponse;
 import com.iol.video.web.dto.VideoDto;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -45,6 +47,7 @@ public class VideoService {
             req.sizeBytes(),
             VideoStatus.CREATED,
             key,
+            req.uploaderId(),
             now,
             now);
     repo.save(v);
@@ -82,21 +85,72 @@ public class VideoService {
   @Transactional(readOnly = true)
   public List<VideoDto> list() {
     return repo.findAll().stream()
-        .sorted((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()))
+        .sorted(
+            Comparator.comparingInt(
+                    (Video v) -> v.getStatus() == VideoStatus.READY ? 0 : 1)
+                .thenComparing(Video::getCreatedAt))
         .map(v -> VideoDto.from(v, app.playbackBaseUrl(), storage))
         .toList();
   }
 
   @Transactional
   public Optional<Video> claimNextForTranscode() {
+    Instant leaseUntil = Instant.now().plusSeconds(app.transcode().leaseTtlSeconds());
+    Optional<Video> fromUpload =
+        repo
+            .findFirstByStatusOrderByCreatedAtAsc(VideoStatus.UPLOADED)
+            .map(
+                v -> {
+                  v.setStatus(VideoStatus.PROCESSING);
+                  v.setProcessingLeaseUntil(leaseUntil);
+                  v.setUpdatedAt(Instant.now());
+                  return repo.save(v);
+                });
+    if (fromUpload.isPresent()) {
+      return fromUpload;
+    }
     return repo
-        .findFirstByStatusOrderByCreatedAtAsc(VideoStatus.UPLOADED)
+        .findStaleProcessing(VideoStatus.PROCESSING, Instant.now(), PageRequest.of(0, 1))
+        .stream()
+        .findFirst()
         .map(
             v -> {
-              v.setStatus(VideoStatus.PROCESSING);
+              v.setProcessingLeaseUntil(leaseUntil);
               v.setUpdatedAt(Instant.now());
               return repo.save(v);
             });
+  }
+
+  @Transactional
+  public void extendProcessingLease(UUID id) {
+    Instant now = Instant.now();
+    Video v = repo.findById(id).orElseThrow(() -> new IllegalArgumentException("Video not found"));
+    if (v.getStatus() != VideoStatus.PROCESSING) {
+      return;
+    }
+    v.setProcessingLeaseUntil(now.plusSeconds(app.transcode().leaseTtlSeconds()));
+    v.setUpdatedAt(now);
+    repo.save(v);
+  }
+
+  /**
+   * Called when the thumbnail is uploaded to storage so clients can show it while HLS is still
+   * encoding. Only valid in {@link VideoStatus#PROCESSING}; {@link #markAsReady} sets the same
+   * prefix again at completion.
+   */
+  @Transactional
+  public void setTranscodeOutputPrefix(UUID id, String outputPrefix) {
+    Video v = repo.findById(id).orElseThrow(() -> new IllegalArgumentException("Video not found"));
+    if (v.getStatus() != VideoStatus.PROCESSING) {
+      throw new IllegalStateException("Expected PROCESSING, got " + v.getStatus());
+    }
+    if (outputPrefix == null || outputPrefix.isBlank()) {
+      throw new IllegalArgumentException("outputPrefix required");
+    }
+    String normalized =
+        outputPrefix.endsWith("/") ? outputPrefix : outputPrefix + "/";
+    v.setOutputPrefix(normalized);
+    v.setUpdatedAt(Instant.now());
   }
 
   @Transactional
@@ -106,6 +160,7 @@ public class VideoService {
     v.setOutputPrefix(outputPrefix);
     v.setManifestObjectKey(manifestObjectKey);
     v.setStatus(VideoStatus.READY);
+    v.setProcessingLeaseUntil(null);
     v.setUpdatedAt(Instant.now());
   }
 
@@ -114,8 +169,18 @@ public class VideoService {
     Video v =
         repo.findById(id).orElseThrow(() -> new IllegalArgumentException("Video not found"));
     v.setStatus(VideoStatus.FAILED);
+    v.setProcessingLeaseUntil(null);
     String msg = errorMessage == null ? "Unknown error" : errorMessage;
     v.setErrorMessage(msg.length() > 4000 ? msg.substring(0, 4000) : msg);
     v.setUpdatedAt(Instant.now());
+  }
+
+  @Transactional
+  public void delete(UUID id, String uploaderId) {
+    Video v = repo.findById(id).orElseThrow(() -> new IllegalArgumentException("Video not found"));
+    if (uploaderId == null || !uploaderId.equals(v.getUploaderId())) {
+      throw new SecurityException("No tienes permiso para eliminar este video.");
+    }
+    repo.delete(v);
   }
 }

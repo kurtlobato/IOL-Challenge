@@ -12,21 +12,38 @@ export function VideoPlayer({ manifestUrl }: Props) {
     const video = ref.current;
     if (!video) return;
 
+    const tryPlay = () => {
+      void video.play().catch(() => {});
+    };
+
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = manifestUrl;
-      return;
+      video.addEventListener("canplay", tryPlay);
+      return () => {
+        video.removeEventListener("canplay", tryPlay);
+        video.removeAttribute("src");
+        video.load();
+      };
     }
 
     if (!Hls.isSupported()) {
       video.src = manifestUrl;
-      return;
+      video.addEventListener("canplay", tryPlay);
+      return () => {
+        video.removeEventListener("canplay", tryPlay);
+        video.removeAttribute("src");
+        video.load();
+      };
     }
 
     const hls = new Hls({ enableWorker: true });
     hls.loadSource(manifestUrl);
     hls.attachMedia(video);
+    hls.on(Hls.Events.MANIFEST_PARSED, tryPlay);
     return () => {
       hls.destroy();
+      video.removeAttribute("src");
+      video.load();
     };
   }, [manifestUrl]);
 

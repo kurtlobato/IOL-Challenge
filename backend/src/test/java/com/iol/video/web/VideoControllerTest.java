@@ -1,11 +1,13 @@
 package com.iol.video.web;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doThrow;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import static org.mockito.Mockito.when;
 
 import com.iol.video.service.VideoService;
 import com.iol.video.web.dto.CreateVideoResponse;
@@ -59,11 +61,42 @@ class VideoControllerTest {
                     "READY",
                     "http://x/m.m3u8",
                     null,
+                    null,
+                    "user1",
                     Instant.parse("2025-01-01T00:00:00Z"))));
     mockMvc
         .perform(get("/api/videos"))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$[0].title").value("hello"))
         .andExpect(jsonPath("$[0].status").value("READY"));
+  }
+
+  @Test
+  void getReturns400WhenMissing() throws Exception {
+    UUID id = UUID.randomUUID();
+    when(videoService.get(id)).thenThrow(new IllegalArgumentException("Video not found"));
+    mockMvc.perform(get("/api/videos/" + id)).andExpect(status().isBadRequest());
+  }
+
+  @Test
+  void completeReturns409WhenConflict() throws Exception {
+    UUID id = UUID.randomUUID();
+    doThrow(new IllegalStateException("Invalid status"))
+        .when(videoService)
+        .completeUpload(id);
+    mockMvc.perform(post("/api/videos/" + id + "/complete")).andExpect(status().isConflict());
+  }
+
+  @Test
+  void createReturns400WhenValidationFails() throws Exception {
+    mockMvc
+        .perform(
+            post("/api/videos")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    """
+                    {"title":"","originalFilename":"a.mp4","contentType":"video/mp4","sizeBytes":1024}
+                    """))
+        .andExpect(status().isBadRequest());
   }
 }

@@ -43,11 +43,18 @@ public class Video {
   @Column(name = "error_message", columnDefinition = "TEXT")
   private String errorMessage;
 
+  @Column(name = "uploader_id", length = 128)
+  private String uploaderId;
+
   @Column(name = "created_at", nullable = false)
   private Instant createdAt;
 
   @Column(name = "updated_at", nullable = false)
   private Instant updatedAt;
+
+  /** Vigente mientras el worker renueva; si expira, otro nodo puede reclamar el mismo PROCESSING. */
+  @Column(name = "processing_lease_until")
+  private Instant processingLeaseUntil;
 
   protected Video() {}
 
@@ -59,6 +66,7 @@ public class Video {
       Long sizeBytes,
       VideoStatus status,
       String originalObjectKey,
+      String uploaderId,
       Instant createdAt,
       Instant updatedAt) {
     this.id = id;
@@ -68,6 +76,7 @@ public class Video {
     this.sizeBytes = sizeBytes;
     this.status = status;
     this.originalObjectKey = originalObjectKey;
+    this.uploaderId = uploaderId;
     this.createdAt = createdAt;
     this.updatedAt = updatedAt;
   }
@@ -138,5 +147,21 @@ public class Video {
 
   public void setUpdatedAt(Instant updatedAt) {
     this.updatedAt = updatedAt;
+  }
+
+  public Instant getProcessingLeaseUntil() {
+    return processingLeaseUntil;
+  }
+
+  public void setProcessingLeaseUntil(Instant processingLeaseUntil) {
+    this.processingLeaseUntil = processingLeaseUntil;
+  }
+
+  public String getUploaderId() {
+    return uploaderId;
+  }
+
+  public void setUploaderId(String uploaderId) {
+    this.uploaderId = uploaderId;
   }
 }
