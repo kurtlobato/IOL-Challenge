@@ -467,3 +467,23 @@ flowchart LR
 | **Redis** | No usado | Cache de listados, rate limit, cola de jobs, pub/sub de progreso; coste: otro servicio HA y consistencia con DB. |
 | **Message broker** | No usado | Desacoplar transcode del API; coste: entrega at-least-once, idempotencia, dead-letter. |
 | **CDN** | No | Menor latencia HLS global; coste: invalidación y configuración de orígenes. |
+
+---
+
+## 11. Uso de IA en este trabajo
+
+La IA (asistente en Cursor) se usó como **apoyo en análisis, síntesis y codificación**, no como sustituto del criterio de diseño ni de la validación final.
+
+1. **Libro sugerido y criterios de calidad**  
+   Se incorporó el EPUB del libro recomendado para obtener un **resumen de aprendizajes clave** aplicables a este proyecto; esa síntesis se volcó en **reglas persistentes de Cursor** (p. ej. filosofía de diseño y estándares de entrega). En paralelo se tomaron **varios bullet points del PDF del challenge** enviado como restricciones y checklist de alcance.
+
+2. **Del PDF del challenge a requisitos**  
+   Las páginas del PDF correspondientes al **challenge elegido** se **descompusieron en requisitos funcionales y de arquitectura** (flujos, límites del sistema, supuestos de despliegue), de modo que el diseño del repo quedara alineado al enunciado y no solo a intuición.
+
+3. **Cruce libro + challenge → decisiones técnicas**  
+   Entre el material del libro y el del challenge se **identificaron decisiones clave**: implementación concreta, **tecnologías, herramientas, librerías, lenguajes** y **arquitectura** (muchas de ellas reflejadas en las secciones anteriores de este `DESIGN.md`).
+
+4. **Plan, implementación y revisiones**  
+   Con esas decisiones cerradas, se pidió en Cursor **armar un plan de implementación**; se **ajustaron puntos del plan** según prioridades y riesgos. Tras la **implementación asistida por IA** se **revisó el resultado funcional** y la **calidad y prolijidad del código** (contratos, errores, tests, complejidad innecesaria). Luego se **iteró** sobre **UX**, **observabilidad** y otros refinamientos.
+
+La responsabilidad de las decisiones finales y de la coherencia del entregable sigue siendo humana; la IA aceleró redacción, exploración de alternativas y volumen de código revisable.
