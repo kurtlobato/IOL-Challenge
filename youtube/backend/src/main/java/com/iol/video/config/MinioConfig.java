@@ -14,6 +14,7 @@ import org.springframework.context.ApplicationListener;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+/** Cliente MinIO con timeouts HTTP y arranque del bucket/política de lectura pública en {@code transcoded/*}. */
 @Configuration
 @EnableConfigurationProperties({MinioProperties.class, AppProperties.class})
 public class MinioConfig {
@@ -42,6 +43,10 @@ public class MinioConfig {
     return new MinioBucketInitializer(client, p);
   }
 
+  /**
+   * Tras el contexto listo: asegura bucket, aplica política S3 solo para prefijo {@code transcoded/}
+   * (GetObject público) para servir HLS/thumbnail vía CDN o proxy.
+   */
   public static final class MinioBucketInitializer implements ApplicationListener<ApplicationReadyEvent> {
 
     private final MinioClient client;

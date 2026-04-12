@@ -10,6 +10,10 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
+/**
+ * Mapea excepciones de dominio y de infraestructura (resilience/MinIO) a respuestas HTTP con cuerpo
+ * JSON {@code { "error": "..." }}.
+ */
 @RestControllerAdvice
 public class RestExceptionHandler {
 
@@ -37,6 +41,10 @@ public class RestExceptionHandler {
         .body(Map.of("error", "Storage request timed out"));
   }
 
+  /**
+   * {@link java.util.concurrent.Future#get} envuelve fallos en {@code ExecutionException}; aquí se
+   * desempaqueta la causa para reutilizar los mismos códigos que timeout/circuito abierto.
+   */
   @ExceptionHandler(ExecutionException.class)
   public ResponseEntity<Map<String, String>> execution(ExecutionException e) {
     Throwable c = e.getCause();

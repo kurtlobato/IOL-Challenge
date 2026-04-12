@@ -6,6 +6,7 @@ import com.iol.video.storage.ObjectStorageService;
 import java.time.Instant;
 import java.util.UUID;
 
+/** Vista API de un video: URLs de manifest/miniatura según estado (READY vs PROCESSING parcial). */
 public record VideoDto(
     UUID id,
     String title,
@@ -16,6 +17,11 @@ public record VideoDto(
     String uploaderId,
     Instant createdAt) {
 
+  /**
+   * En READY construye manifest y miniatura a partir de la clave del master (sustituye {@code
+   * master.m3u8} por {@code thumbnail.jpg}). En PROCESSING solo expone miniatura si ya hay {@code
+   * outputPrefix}.
+   */
   public static VideoDto from(Video v, String playbackBaseUrl, ObjectStorageService storage) {
     String manifest = null;
     String thumb = null;

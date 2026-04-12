@@ -8,6 +8,7 @@ import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
+/** Health de Actuator: comprueba existencia del bucket configurado (sin pasar por resilience4j). */
 @Component
 @ConditionalOnProperty(name = "management.health.minio.enabled", havingValue = "true", matchIfMissing = true)
 public class MinioHealthIndicator implements HealthIndicator {

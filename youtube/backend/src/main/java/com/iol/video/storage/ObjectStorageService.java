@@ -20,6 +20,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import org.springframework.stereotype.Service;
 
+/**
+ * Acceso a MinIO envuelto en circuit breaker y time limiter (misma clave {@value #MINIO} en
+ * Resilience4j) para no bloquear hilos de request ante lentitud o fallos en cascada.
+ */
 @Service
 public class ObjectStorageService {
 
@@ -111,6 +115,10 @@ public class ObjectStorageService {
     return props.bucket();
   }
 
+  /**
+   * URL pública de lectura directa (p. ej. detrás de nginx) concatenando base, bucket y clave de
+   * objeto.
+   */
   public String publicUrlForKey(String objectKey, String playbackBaseUrl) {
     String base =
         playbackBaseUrl.endsWith("/")
@@ -119,6 +127,10 @@ public class ObjectStorageService {
     return base + "/" + props.bucket() + "/" + objectKey;
   }
 
+  /**
+   * Ejecuta la llamada en un hilo del scheduler dedicado para que {@link TimeLimiter} pueda
+   * cancelar la espera; el {@link CircuitBreaker} envuelve esa ejecución acotada en tiempo.
+   */
   private <T> T executeMinio(Callable<T> call) throws Exception {
     CircuitBreaker cb = circuitBreakerRegistry.circuitBreaker(MINIO);
     TimeLimiter tl = timeLimiterRegistry.timeLimiter(MINIO);

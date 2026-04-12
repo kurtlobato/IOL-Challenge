@@ -22,6 +22,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+/**
+ * Orquesta descarga del original, ffmpeg (miniatura + variantes HLS), subida a objeto y cierre en
+ * estado {@link com.iol.video.domain.VideoStatus#READY}.
+ */
 @Service
 public class TranscodeService {
 
@@ -48,7 +52,14 @@ public class TranscodeService {
     this.videoService = videoService;
   }
 
-  /** Heavy work outside a DB transaction; commits success with {@link VideoService#markAsReady}. */
+  /**
+   * Trabajo pesado fuera de transacción JPA larga. Renueva periódicamente el lease de procesamiento
+   * para que un worker caído no bloquee el video indefinidamente; al terminar llama a {@link
+   * VideoService#markAsReady}.
+   *
+   * @throws IllegalArgumentException si no existe el video
+   * @throws IllegalStateException si el estado no es {@code PROCESSING}
+   */
   public void runPipeline(UUID videoId) throws Exception {
     Video meta =
         repo
@@ -168,6 +179,10 @@ public class TranscodeService {
     }
   }
 
+  /**
+   * Codifica una variante HLS VOD en {@code variantDir} (cwd de ffmpeg), con segmentos bajo {@link
+   * #HLS_SEGMENT_SUBDIR}. Ajusta video bitrate restando el audio fijo {@link #AUDIO_BPS}.
+   */
   private void runFfmpegVariant(Path input, Path variantDir, AppProperties.HlsVariant v)
       throws Exception {
     int videoBps = Math.max(256_000, v.bandwidthBps() - AUDIO_BPS);
@@ -231,6 +246,7 @@ public class TranscodeService {
     return new String(proc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
   }
 
+  /** Termina ffmpeg de forma ordenada y, si no responde, fuerza la destrucción del proceso. */
   private static void destroyFfmpegProcess(Process proc) {
     proc.destroy();
     try {
@@ -281,6 +297,7 @@ public class TranscodeService {
     return "application/octet-stream";
   }
 
+  /** Borra un directorio temporal de forma best-effort (profundidad descendente para vaciar bien). */
   private static void deleteTree(Path root) {
     try {
       if (Files.exists(root)) {

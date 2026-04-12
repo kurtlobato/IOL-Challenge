@@ -14,6 +14,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+/**
+ * Tarea programada que reclama un video para transcodificar y ejecuta el pipeline con reintentos.
+ *
+ * <p>El reclamo usa ShedLock para que, con varias instancias, solo una ejecute {@code claim} a la
+ * vez; el lease en BD evita que dos workers procesen el mismo {@code PROCESSING}.
+ */
 @Component
 public class TranscodeWorker {
 
@@ -38,6 +44,10 @@ public class TranscodeWorker {
     this.app = app;
   }
 
+  /**
+   * Intenta reclamar el siguiente video elegible bajo lock distribuido y, si hay uno, lanza la
+   * transcodificación (fuera del lock de reclamo).
+   */
   @Scheduled(fixedDelayString = "${app.transcode.poll-ms}")
   public void poll() {
     AtomicReference<Optional<UUID>> claimedId = new AtomicReference<>(Optional.empty());
@@ -53,6 +63,10 @@ public class TranscodeWorker {
     claimedId.get().ifPresent(this::runTranscodeWithRetries);
   }
 
+  /**
+   * Reintentos con backoff lineal; interrupción durante el sleep marca fallo explícito. Tras agotar
+   * intentos, persiste el error vía {@link VideoService#markFailed}.
+   */
   private void runTranscodeWithRetries(UUID id) {
     int max = env.getProperty("app.transcode.max-retries", Integer.class, 3);
     Exception last = null;

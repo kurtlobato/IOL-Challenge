@@ -9,6 +9,10 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+/**
+ * ShedLock en JDBC: evita que el cron de reclamo de transcodificación se solape entre réplicas
+ * (una fila de lock por nombre).
+ */
 @Configuration
 public class ShedLockConfig {
 

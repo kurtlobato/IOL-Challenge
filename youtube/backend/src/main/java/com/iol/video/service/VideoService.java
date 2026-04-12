@@ -17,6 +17,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+/** Casos de uso de video: alta con presign, completado, listado y transición a procesamiento/ready. */
 @Service
 public class VideoService {
 
@@ -82,6 +83,10 @@ public class VideoService {
         storage);
   }
 
+  /**
+   * Lista todos los videos: primero los {@link VideoStatus#READY}, luego el resto, ordenados por
+   * {@code createdAt} dentro de cada grupo.
+   */
   @Transactional(readOnly = true)
   public List<VideoDto> list() {
     return repo.findAll().stream()
@@ -93,6 +98,11 @@ public class VideoService {
         .toList();
   }
 
+  /**
+   * Toma el siguiente video en {@link VideoStatus#UPLOADED} con bloqueo pesimista, o re-adquiere un
+   * {@link VideoStatus#PROCESSING} cuyo lease ya venció (worker muerto). En ambos casos renueva el
+   * lease hasta {@code app.transcode.leaseTtlSeconds}.
+   */
   @Transactional
   public Optional<Video> claimNextForTranscode() {
     Instant leaseUntil = Instant.now().plusSeconds(app.transcode().leaseTtlSeconds());
@@ -121,6 +131,10 @@ public class VideoService {
             });
   }
 
+  /**
+   * Extiende {@code processingLeaseUntil} mientras siga en {@code PROCESSING}; no hace nada en
+   * otros estados (p. ej. ya marcado READY por otro hilo).
+   */
   @Transactional
   public void extendProcessingLease(UUID id) {
     Instant now = Instant.now();
@@ -153,6 +167,10 @@ public class VideoService {
     v.setUpdatedAt(Instant.now());
   }
 
+  /**
+   * Marca el video listo para reproducción, fija prefijo de salida y clave del manifest HLS, y
+   * limpia el lease.
+   */
   @Transactional
   public void markAsReady(UUID id, String outputPrefix, String manifestObjectKey) {
     Video v =
@@ -164,6 +182,7 @@ public class VideoService {
     v.setUpdatedAt(Instant.now());
   }
 
+  /** Persiste fallo de transcodificación, truncando el mensaje a 4000 caracteres. */
   @Transactional
   public void markFailed(UUID id, String errorMessage) {
     Video v =

@@ -9,6 +9,10 @@ import jakarta.persistence.Table;
 import java.time.Instant;
 import java.util.UUID;
 
+/**
+ * Metadatos de un video en el flujo CREATED → UPLOADED → PROCESSING → READY/FAILED, con claves de
+ * objeto en almacenamiento y lease opcional durante PROCESSING.
+ */
 @Entity
 @Table(name = "videos")
 public class Video {
