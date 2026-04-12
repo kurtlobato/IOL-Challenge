@@ -64,6 +64,13 @@ public class Video {
   @Column(name = "processing_progress")
   private Integer processingProgress;
 
+  /** Duración del master en segundos (ffprobe); null hasta conocerla en transcodificación. */
+  @Column(name = "duration_seconds")
+  private Double durationSeconds;
+
+  @Column(name = "view_count", nullable = false)
+  private long viewCount;
+
   protected Video() {}
 
   public Video(
@@ -87,6 +94,7 @@ public class Video {
     this.uploaderId = uploaderId;
     this.createdAt = createdAt;
     this.updatedAt = updatedAt;
+    this.viewCount = 0L;
   }
 
   public UUID getId() {
@@ -95,6 +103,10 @@ public class Video {
 
   public String getTitle() {
     return title;
+  }
+
+  public void setTitle(String title) {
+    this.title = title;
   }
 
   public String getOriginalFilename() {
@@ -179,5 +191,21 @@ public class Video {
 
   public void setUploaderId(String uploaderId) {
     this.uploaderId = uploaderId;
+  }
+
+  public Double getDurationSeconds() {
+    return durationSeconds;
+  }
+
+  public void setDurationSeconds(Double durationSeconds) {
+    this.durationSeconds = durationSeconds;
+  }
+
+  public long getViewCount() {
+    return viewCount;
+  }
+
+  public void setViewCount(long viewCount) {
+    this.viewCount = viewCount;
   }
 }

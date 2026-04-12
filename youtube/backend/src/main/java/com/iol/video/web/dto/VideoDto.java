@@ -16,7 +16,9 @@ public record VideoDto(
     String errorMessage,
     String uploaderId,
     Instant createdAt,
-    Integer progressPercent) {
+    Integer progressPercent,
+    Double durationSeconds,
+    long viewCount) {
 
   /**
    * En READY construye manifest y miniatura a partir de la clave del master (sustituye {@code
@@ -50,6 +52,8 @@ public record VideoDto(
         v.getErrorMessage(),
         v.getUploaderId(),
         v.getCreatedAt(),
-        progressPercent);
+        progressPercent,
+        v.getDurationSeconds(),
+        v.getViewCount());
   }
 }

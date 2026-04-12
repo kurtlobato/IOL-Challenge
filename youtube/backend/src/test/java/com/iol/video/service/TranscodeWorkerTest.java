@@ -58,7 +58,8 @@ class TranscodeWorkerTest {
             "http://localhost/storage",
             new AppProperties.Transcode(3, 4000L, 120, 45, 45, 7200, 180),
             new AppProperties.Ffmpeg("ffmpeg"),
-            List.of(new AppProperties.HlsVariant("480p", 480, 1_000_000)));
+            List.of(new AppProperties.HlsVariant("480p", 480, 1_000_000)),
+            null);
     worker = new TranscodeWorker(videoService, transcodeService, env, NOOP_LOCK, app);
     lenient().when(env.getProperty("app.transcode.max-retries", Integer.class, 3)).thenReturn(3);
   }

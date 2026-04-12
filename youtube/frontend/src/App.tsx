@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { matchPath, useLocation, useNavigate } from "react-router-dom";
 import {
   completeVideo,
   createVideo,
   getVideo,
+  getOriginalDownloadLink,
   listVideos,
   uploadToPresigned,
   deleteVideo,
+  updateVideoTitle,
   type VideoItem,
 } from "./api";
 import { VideoPlayer } from "./VideoPlayer";
 import { VideoHoverPreview } from "./VideoHoverPreview";
 import { formatFullUploadDateDetail, formatRelativeUploadDate } from "./formatUploadDate";
+import { formatVideoDurationHms, formatViewsLine } from "./formatYoutubeStats";
+import { downloadFromUrl } from "./downloadFromUrl";
 import "./App.css";
 
 export default function App() {
@@ -26,8 +31,22 @@ export default function App() {
   
   const [selected, setSelected] = useState<VideoItem | null>(null);
   const [hoverPreviewId, setHoverPreviewId] = useState<string | null>(null);
+  const [cardMenuOpenId, setCardMenuOpenId] = useState<string | null>(null);
+  const [editModalVideo, setEditModalVideo] = useState<VideoItem | null>(null);
+  const [editDraftTitle, setEditDraftTitle] = useState("");
+  const [editModalError, setEditModalError] = useState<string | null>(null);
+  const [editModalSaving, setEditModalSaving] = useState(false);
+  const [deleteModalVideo, setDeleteModalVideo] = useState<VideoItem | null>(null);
+  const [deleteModalError, setDeleteModalError] = useState<string | null>(null);
+  const [deleteModalDeleting, setDeleteModalDeleting] = useState(false);
+  const [downloadBusyId, setDownloadBusyId] = useState<string | null>(null);
   const hoverPreviewTimeById = useRef<Map<string, number>>(new Map());
   const fileInputId = useId();
+  const editTitleInputId = useId();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const urlVideoId =
+    matchPath({ path: "/watch/:videoId", end: true }, location.pathname)?.params.videoId ?? undefined;
 
   // Generamos un ID de usuario descartable para esta sesión/navegador
   const [myUploaderId, setMyUploaderId] = useState<string>("");
@@ -54,6 +73,51 @@ export default function App() {
   useEffect(() => {
     refresh().catch((e) => console.error(e));
   }, [refresh]);
+
+  useEffect(() => {
+    if (!urlVideoId) {
+      setSelected(null);
+      return;
+    }
+    const fromList = items.find((v) => v.id === urlVideoId);
+    if (fromList) {
+      setSelected(fromList);
+      return;
+    }
+    let cancelled = false;
+    void getVideo(urlVideoId)
+      .then((v) => {
+        if (cancelled) return;
+        setSelected(v);
+        setItems((prev) => {
+          if (prev.some((x) => x.id === v.id)) return prev.map((x) => (x.id === v.id ? v : x));
+          return [v, ...prev];
+        });
+      })
+      .catch(() => {
+        if (!cancelled) navigate("/", { replace: true });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [urlVideoId, items, navigate]);
+
+  const viewKey = selected ? selected.id : "home";
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [viewKey]);
+
+  useEffect(() => {
+    if (!cardMenuOpenId) return;
+    const close = () => setCardMenuOpenId(null);
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [cardMenuOpenId]);
+
+  const patchViewCount = useCallback((id: string, viewCount: number) => {
+    setItems((prev) => prev.map((x) => (x.id === id ? { ...x, viewCount } : x)));
+    setSelected((cur) => (cur?.id === id ? { ...cur, viewCount } : cur));
+  }, []);
 
   useEffect(() => {
     if (!selected) return;
@@ -110,16 +174,85 @@ export default function App() {
     }
   }
 
-  async function handleDelete(id: string) {
-    if (!confirm("¿Seguro que quieres eliminar este video?")) return;
+  async function handleDownloadOriginal(v: VideoItem) {
+    setCardMenuOpenId(null);
+    setDownloadBusyId(v.id);
     try {
-      await deleteVideo(id, myUploaderId);
-      if (selected?.id === id) {
-        setSelected(null);
-      }
-      await refresh();
+      const { url, filename } =
+        v.status === "READY"
+          ? await getOriginalDownloadLink(v.id)
+          : await getOriginalDownloadLink(v.id, myUploaderId);
+      await downloadFromUrl(url, filename);
     } catch (err) {
       alert(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDownloadBusyId(null);
+    }
+  }
+
+  function openEditModal(v: VideoItem) {
+    setEditModalVideo(v);
+    setEditDraftTitle(v.title);
+    setEditModalError(null);
+    setCardMenuOpenId(null);
+  }
+
+  function closeEditModal() {
+    setEditModalVideo(null);
+    setEditDraftTitle("");
+    setEditModalError(null);
+    setEditModalSaving(false);
+  }
+
+  async function submitEditTitle(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editModalVideo) return;
+    const t = editDraftTitle.trim();
+    if (!t) {
+      setEditModalError("El título no puede estar vacío.");
+      return;
+    }
+    setEditModalSaving(true);
+    setEditModalError(null);
+    try {
+      const updated = await updateVideoTitle(editModalVideo.id, myUploaderId, t);
+      setItems((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+      setSelected((cur) => (cur?.id === updated.id ? updated : cur));
+      closeEditModal();
+    } catch (err) {
+      setEditModalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setEditModalSaving(false);
+    }
+  }
+
+  function openDeleteModal(v: VideoItem) {
+    setDeleteModalVideo(v);
+    setDeleteModalError(null);
+    setCardMenuOpenId(null);
+  }
+
+  function closeDeleteModal() {
+    setDeleteModalVideo(null);
+    setDeleteModalError(null);
+    setDeleteModalDeleting(false);
+  }
+
+  async function confirmDeleteVideo() {
+    if (!deleteModalVideo) return;
+    setDeleteModalDeleting(true);
+    setDeleteModalError(null);
+    try {
+      await deleteVideo(deleteModalVideo.id, myUploaderId);
+      if (selected?.id === deleteModalVideo.id) {
+        navigate("/", { replace: true });
+      }
+      await refresh();
+      closeDeleteModal();
+    } catch (err) {
+      setDeleteModalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeleteModalDeleting(false);
     }
   }
 
@@ -139,7 +272,7 @@ export default function App() {
   return (
     <>
       <nav className="navbar">
-        <div className="navbar-brand" onClick={() => setSelected(null)}>
+        <div className="navbar-brand" onClick={() => navigate("/")}>
           <img className="navbar-logo" src="/favicon-32.png" alt="" width={28} height={28} />
           IOL Video
         </div>
@@ -153,7 +286,13 @@ export default function App() {
           <div className="video-section">
             <div className="video-wrapper">
               {selected.status === "READY" && selected.manifestUrl ? (
-                <VideoPlayer manifestUrl={selected.manifestUrl} />
+                <VideoPlayer
+                  manifestUrl={selected.manifestUrl}
+                  videoId={selected.id}
+                  viewerKey={myUploaderId}
+                  durationSeconds={selected.durationSeconds}
+                  onViewCountUpdated={(c) => patchViewCount(selected.id, c)}
+                />
               ) : selected.status === "FAILED" ? (
                 <div style={{aspectRatio: "16/9", background: "#000", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "12px"}}>
                   <span className="err">Error al procesar ({selected.errorMessage})</span>
@@ -177,8 +316,26 @@ export default function App() {
               )}
             </div>
             <h1 className="player-title">{selected.title}</h1>
-            <p className="card-meta">
-              IOL Channel • {formatFullUploadDateDetail(selected.createdAt)}
+            <p className="card-meta player-channel-row">
+              <span>IOL Channel</span>
+              <span className="verified-badge" title="Canal verificado" aria-hidden>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M12 1L15 8h7l-5.5 4.2L19 22l-7-4.5L5 22l2.5-9.8L2 8h7L12 1z"
+                    fill="#3ea6ff"
+                  />
+                  <path
+                    d="M8.5 12.2l2.5 2.4 5-5"
+                    stroke="#0f0f0f"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+            </p>
+            <p className="card-meta player-stats-row">
+              {formatViewsLine(selected.viewCount ?? 0)} • {formatRelativeUploadDate(selected.createdAt)}
             </p>
           </div>
           <div className="related-section">
@@ -189,7 +346,7 @@ export default function App() {
                   key={v.id}
                   className={`related-row ${v.status === "READY" ? "related-row-ready" : "related-row-pending"}`}
                   onClick={() => {
-                    setSelected(v);
+                    navigate(`/watch/${v.id}`);
                   }}
                 >
                   <div className="related-thumb">
@@ -241,6 +398,7 @@ export default function App() {
         <main className="dashboard">
           {items.map((v) => {
             const openable = v.status === "READY";
+            const isMine = v.uploaderId === myUploaderId;
             return (
             <div
               key={v.id}
@@ -254,7 +412,12 @@ export default function App() {
               <div
                 className="thumbnail"
                 onClick={() => {
-                  setSelected(v);
+                  const openMenu = cardMenuOpenId;
+                  if (openMenu != null) {
+                    setCardMenuOpenId(null);
+                    if (openMenu === v.id) return;
+                  }
+                  navigate(`/watch/${v.id}`);
                 }}
               >
                 {v.thumbnailUrl ? (
@@ -286,37 +449,129 @@ export default function App() {
                     }}
                   />
                 ) : null}
+                {openable &&
+                v.durationSeconds != null &&
+                Number.isFinite(v.durationSeconds) &&
+                v.durationSeconds > 0 ? (
+                  <span className="thumb-duration">{formatVideoDurationHms(v.durationSeconds)}</span>
+                ) : null}
               </div>
               <div className="card-info">
                 <div className="avatar">I</div>
                 <div className="card-text">
-                  <h3
-                    className="card-title"
-                    onClick={() => {
-                      setSelected(v);
-                    }}
-                  >
-                    {v.title}
-                  </h3>
-                  <p className="card-meta">IOL Channel</p>
-                  <p className="card-meta">{formatRelativeUploadDate(v.createdAt)}</p>
-                  <div>
-                    <span className={`pill pill-${v.status}`}>
-                      {v.status}
-                      {v.progressPercent != null ? ` ${v.progressPercent}%` : ""}
-                    </span>
+                  <div className="card-title-row">
+                    <h3
+                      className="card-title"
+                      onClick={() => {
+                        const openMenu = cardMenuOpenId;
+                        if (openMenu != null) {
+                          setCardMenuOpenId(null);
+                          if (openMenu === v.id) return;
+                        }
+                        navigate(`/watch/${v.id}`);
+                      }}
+                    >
+                      {v.title}
+                    </h3>
+                    {openable ? (
+                      <div className="card-more-wrap">
+                        <button
+                          type="button"
+                          className="card-more-btn"
+                          aria-label="Acciones del video"
+                          aria-expanded={cardMenuOpenId === v.id}
+                          aria-haspopup="menu"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setCardMenuOpenId((cur) => (cur === v.id ? null : v.id));
+                          }}
+                        >
+                          <svg
+                            className="card-more-dots"
+                            width="18"
+                            height="18"
+                            viewBox="0 0 24 24"
+                            fill="currentColor"
+                            aria-hidden
+                          >
+                            <circle cx="12" cy="6" r="1.75" />
+                            <circle cx="12" cy="12" r="1.75" />
+                            <circle cx="12" cy="18" r="1.75" />
+                          </svg>
+                        </button>
+                        {cardMenuOpenId === v.id ? (
+                          <div
+                            className="card-more-menu"
+                            role="menu"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              className="card-more-menu-item"
+                              role="menuitem"
+                              disabled={downloadBusyId === v.id}
+                              onClick={() => void handleDownloadOriginal(v)}
+                            >
+                              {downloadBusyId === v.id ? "Descargando…" : "Descargar"}
+                            </button>
+                            {isMine ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="card-more-menu-item"
+                                  role="menuitem"
+                                  onClick={() => openEditModal(v)}
+                                >
+                                  Editar
+                                </button>
+                                <button
+                                  type="button"
+                                  className="card-more-menu-item card-more-menu-danger"
+                                  role="menuitem"
+                                  onClick={() => openDeleteModal(v)}
+                                >
+                                  Eliminar
+                                </button>
+                              </>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
+                  <p className="card-meta card-channel-row">
+                    <span>IOL Channel</span>
+                    <span className="verified-badge verified-badge-sm" title="Canal verificado" aria-hidden>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                        <path
+                          d="M12 1L15 8h7l-5.5 4.2L19 22l-7-4.5L5 22l2.5-9.8L2 8h7L12 1z"
+                          fill="#aaa"
+                        />
+                        <path
+                          d="M8.5 12.2l2.5 2.4 5-5"
+                          stroke="#0f0f0f"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </span>
+                  </p>
+                  <p className="card-meta card-views-row">
+                    {openable
+                      ? `${formatViewsLine(v.viewCount ?? 0)} • ${formatRelativeUploadDate(v.createdAt)}`
+                      : formatRelativeUploadDate(v.createdAt)}
+                  </p>
+                  {!openable ? (
+                    <div>
+                      <span className={`pill pill-${v.status}`}>
+                        {v.status}
+                        {v.progressPercent != null ? ` ${v.progressPercent}%` : ""}
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
               </div>
-              {v.uploaderId === myUploaderId && (
-                <button 
-                  onClick={(e) => { e.stopPropagation(); handleDelete(v.id); }}
-                  style={{position: "absolute", top: "8px", right: "8px", background: "rgba(0,0,0,0.7)", border: "none", color: "#ff4e45", borderRadius: "50%", width: "32px", height: "32px", cursor: "pointer", zIndex: 10, display: "flex", justifyContent: "center", alignItems: "center"}}
-                  title="Eliminar mi video"
-                >
-                  <span style={{fontSize: "1.2rem"}}>🗑</span>
-                </button>
-              )}
             </div>
             );
           })}
@@ -326,6 +581,113 @@ export default function App() {
              </div>
           )}
         </main>
+      )}
+
+      {editModalVideo && (
+        <div
+          className="modal-overlay"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeEditModal();
+          }}
+        >
+          <div className="modal-content" role="dialog" aria-labelledby="edit-modal-title">
+            <div className="modal-header">
+              <span id="edit-modal-title">Editar video</span>
+              <button type="button" className="btn-close" onClick={closeEditModal} aria-label="Cerrar">
+                &times;
+              </button>
+            </div>
+            <div className="modal-body">
+              <form
+                onSubmit={(e) => void submitEditTitle(e)}
+                style={{
+                  width: "100%",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "16px",
+                  maxWidth: "480px",
+                }}
+              >
+                <div className="form-group">
+                  <label htmlFor={editTitleInputId}>Título del video</label>
+                  <input
+                    id={editTitleInputId}
+                    type="text"
+                    value={editDraftTitle}
+                    onChange={(e) => setEditDraftTitle(e.target.value)}
+                    disabled={editModalSaving}
+                    required
+                  />
+                </div>
+                {editModalError ? <p className="err">{editModalError}</p> : null}
+                <div className="modal-actions">
+                  <button
+                    type="button"
+                    className="btn-modal-secondary"
+                    onClick={closeEditModal}
+                    disabled={editModalSaving}
+                  >
+                    Cancelar
+                  </button>
+                  <button type="submit" className="btn-primary" disabled={editModalSaving}>
+                    {editModalSaving ? "Guardando…" : "Guardar"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteModalVideo && (
+        <div
+          className="modal-overlay"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !deleteModalDeleting) closeDeleteModal();
+          }}
+        >
+          <div className="modal-content" role="dialog" aria-labelledby="delete-modal-title">
+            <div className="modal-header">
+              <span id="delete-modal-title">Eliminar video</span>
+              <button
+                type="button"
+                className="btn-close"
+                onClick={closeDeleteModal}
+                disabled={deleteModalDeleting}
+                aria-label="Cerrar"
+              >
+                &times;
+              </button>
+            </div>
+            <div className="modal-body">
+              <p className="modal-confirm-text">
+                ¿Eliminar permanentemente{" "}
+                <strong>{deleteModalVideo.title}</strong>? Esta acción no se puede deshacer.
+              </p>
+              {deleteModalError ? <p className="err">{deleteModalError}</p> : null}
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="btn-modal-secondary"
+                  onClick={closeDeleteModal}
+                  disabled={deleteModalDeleting}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  className="btn-modal-danger"
+                  onClick={() => void confirmDeleteVideo()}
+                  disabled={deleteModalDeleting}
+                >
+                  {deleteModalDeleting ? "Eliminando…" : "Eliminar"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {isModalOpen && (

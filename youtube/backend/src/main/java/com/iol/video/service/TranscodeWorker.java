@@ -72,7 +72,13 @@ public class TranscodeWorker {
     Exception last = null;
     for (int attempt = 1; attempt <= max; attempt++) {
       try {
+        if (attempt == 1) {
+          log.info("Worker ejecuta transcode: videoId={} maxIntentos={}", id, max);
+        } else {
+          log.info("Worker reintenta transcode: videoId={} intento={}/{}", id, attempt, max);
+        }
         transcodeService.runPipeline(id);
+        log.info("Worker transcode completado: videoId={}", id);
         return;
       } catch (Exception e) {
         last = e;

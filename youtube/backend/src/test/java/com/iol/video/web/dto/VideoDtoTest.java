@@ -42,6 +42,8 @@ class VideoDtoTest {
     assertNull(dto.manifestUrl());
     assertEquals("http://pb/bucket/transcoded/" + id + "/thumbnail.jpg", dto.thumbnailUrl());
     assertEquals(1, dto.progressPercent());
+    assertNull(dto.durationSeconds());
+    assertEquals(0L, dto.viewCount());
   }
 
   @Test

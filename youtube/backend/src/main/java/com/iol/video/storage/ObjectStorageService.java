@@ -9,6 +9,7 @@ import io.minio.GetObjectArgs;
 import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
+import io.minio.RemoveObjectArgs;
 import io.minio.StatObjectArgs;
 import io.minio.errors.ErrorResponseException;
 import io.minio.http.Method;
@@ -19,6 +20,8 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
@@ -28,6 +31,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class ObjectStorageService {
 
+  private static final Logger log = LoggerFactory.getLogger(ObjectStorageService.class);
   private static final String MINIO = "minio";
 
   private final MinioClient client;
@@ -55,6 +59,18 @@ public class ObjectStorageService {
             client.getPresignedObjectUrl(
                 GetPresignedObjectUrlArgs.builder()
                     .method(Method.PUT)
+                    .bucket(props.bucket())
+                    .object(objectKey)
+                    .expiry(ttlSeconds, TimeUnit.SECONDS)
+                    .build()));
+  }
+
+  public String presignedGet(String objectKey, int ttlSeconds) throws Exception {
+    return executeMinio(
+        () ->
+            client.getPresignedObjectUrl(
+                GetPresignedObjectUrlArgs.builder()
+                    .method(Method.GET)
                     .bucket(props.bucket())
                     .object(objectKey)
                     .expiry(ttlSeconds, TimeUnit.SECONDS)
@@ -142,6 +158,23 @@ public class ObjectStorageService {
         () ->
             client.getObject(
                 GetObjectArgs.builder().bucket(props.bucket()).object(objectKey).build()));
+  }
+
+  /**
+   * Borra el objeto en el bucket; ignora ausencia. Otros fallos se registran y no se propagan para
+   * no bloquear limpieza en BD.
+   */
+  public void removeObjectBestEffort(String objectKey) {
+    try {
+      executeMinio(
+          () -> {
+            client.removeObject(
+                RemoveObjectArgs.builder().bucket(props.bucket()).object(objectKey).build());
+            return null;
+          });
+    } catch (Exception e) {
+      log.warn("removeObjectBestEffort {}: {}", objectKey, e.getMessage());
+    }
   }
 
   public String bucket() {

@@ -13,8 +13,8 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 16px;
-  height: 56px;
+  padding: 12px 28px;
+  min-height: 60px;
   position: sticky;
   top: 0;
   background: rgba(15,15,15,0.95);
@@ -131,6 +131,16 @@ body {
   display: none;
 }
 
+.thumbnail-preview-wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+
 .thumbnail-preview-video {
   position: absolute;
   inset: 0;
@@ -138,12 +148,85 @@ body {
   height: 100%;
   object-fit: cover;
   pointer-events: none;
-  z-index: 1;
+  z-index: 0;
+}
+
+.thumb-preview-progress {
+  position: relative;
+  z-index: 2;
+  padding: 0 6px 5px;
+  pointer-events: auto;
+}
+
+.thumb-preview-rail {
+  position: relative;
+  height: 3px;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: height 0.12s ease;
+}
+
+.thumb-preview-rail:hover {
+  height: 5px;
+}
+
+.thumb-preview-rail-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.thumb-preview-rail-played {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 2px;
+  background: #3ea6ff;
+  pointer-events: none;
+}
+
+.thumb-preview-rail-handle {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.thumb-preview-rail:hover .thumb-preview-rail-handle {
+  opacity: 1;
+}
+
+.thumb-preview-tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: #f1f1f1;
+  background: rgba(15, 15, 15, 0.92);
+  transform: translateX(-50%);
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
 }
 
 .card-info {
   display: flex;
   gap: 12px;
+  align-items: flex-start;
+  min-width: 0;
 }
 
 .avatar {
@@ -162,21 +245,156 @@ body {
 .card-text {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-width: 0;
+}
+
+.card-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 4px;
+  min-width: 0;
+  width: 100%;
 }
 
 .card-title {
   font-size: 1rem;
   font-weight: 500;
-  margin: 0 0 4px 0;
+  margin: 0;
   line-height: 1.35;
   min-height: calc(1.35em * 2);
+  flex: 1;
+  min-width: 0;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
   text-overflow: ellipsis;
   word-break: break-word;
+}
+
+.card-more-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.card-more-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #f1f1f1;
+  cursor: pointer;
+}
+
+.card-more-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.card-more-dots {
+  display: block;
+  opacity: 0.85;
+}
+
+.card-more-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.card-more-menu {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 2px;
+  min-width: 160px;
+  padding: 6px 0;
+  background: #282828;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  z-index: 50;
+}
+
+.card-more-menu-item {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  border: none;
+  background: none;
+  color: #f1f1f1;
+  font-size: 0.9rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.card-more-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.card-more-menu-item.is-disabled {
+  color: #717171;
+  cursor: default;
+}
+
+.card-more-menu-item.is-disabled:hover {
+  background: none;
+}
+
+.card-more-menu-danger {
+  color: #ff8983;
+}
+
+.thumb-duration {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  z-index: 3;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  pointer-events: none;
+}
+
+.card-channel-row,
+.card-views-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.card-views-row {
+  margin-top: 2px;
+}
+
+.verified-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.verified-badge-sm svg {
+  display: block;
+}
+
+.player-channel-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.player-stats-row {
+  margin-top: 0;
 }
 
 .card-meta {
@@ -290,6 +508,171 @@ body {
   aspect-ratio: 16 / 9;
   background: #000;
   border-radius: 12px;
+}
+
+/* Detalle / reproductor: barra de progreso (misma línea reproducida #3ea6ff que hover en cards) */
+.detail-player-shell {
+  width: 100%;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #0d0d0d;
+}
+
+.detail-player-video {
+  display: block;
+  width: 100%;
+  cursor: pointer;
+}
+
+.detail-player-chrome {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 10px;
+  user-select: none;
+}
+
+.detail-player-icon-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #f1f1f1;
+  cursor: pointer;
+}
+
+.detail-player-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.detail-player-seek-wrap {
+  flex: 1;
+  min-width: 120px;
+}
+
+.detail-player-rail {
+  position: relative;
+  height: 4px;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: height 0.12s ease;
+}
+
+.detail-player-rail:hover {
+  height: 6px;
+}
+
+.detail-player-rail:focus-visible {
+  outline: 2px solid #3ea6ff;
+  outline-offset: 3px;
+}
+
+.detail-player-rail-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.detail-player-rail-played {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 2px;
+  background: #3ea6ff;
+  pointer-events: none;
+}
+
+.detail-player-rail-handle {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.detail-player-rail:hover .detail-player-rail-handle {
+  opacity: 1;
+}
+
+.detail-player-time {
+  flex-shrink: 0;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  color: #ccc;
+  min-width: 7.5em;
+  text-align: right;
+}
+
+/*
+ * Pantalla completa: barra fija abajo (overlay). La clase --fullscreen la pone JS
+ * (fullscreenchange / webkitfullscreenchange) por si :fullscreen no aplica igual en todos.
+ */
+.detail-player-shell:fullscreen,
+.detail-player-shell:-webkit-full-screen,
+.detail-player-shell:-moz-full-screen,
+.detail-player-shell.detail-player-shell--fullscreen {
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  max-height: 100%;
+  overflow: visible;
+  border-radius: 0;
+  background: #000;
+}
+
+.video-wrapper .detail-player-shell:fullscreen .detail-player-video,
+.video-wrapper .detail-player-shell:-webkit-full-screen .detail-player-video,
+.video-wrapper .detail-player-shell:-moz-full-screen .detail-player-video,
+.video-wrapper .detail-player-shell.detail-player-shell--fullscreen .detail-player-video {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  aspect-ratio: auto;
+  max-height: none;
+  object-fit: contain;
+  cursor: pointer;
+}
+
+.detail-player-shell:fullscreen .detail-player-chrome,
+.detail-player-shell:-webkit-full-screen .detail-player-chrome,
+.detail-player-shell:-moz-full-screen .detail-player-chrome,
+.detail-player-shell.detail-player-shell--fullscreen .detail-player-chrome {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+  padding-left: calc(14px + env(safe-area-inset-left, 0px));
+  padding-right: calc(14px + env(safe-area-inset-right, 0px));
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.92));
+  pointer-events: auto;
 }
 
 .player-title {
@@ -481,6 +864,63 @@ body {
 .btn-primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.btn-modal-secondary {
+  padding: 10px 20px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #f1f1f1;
+  background: #2a2a2a;
+  border: 1px solid #4a4a4a;
+  border-radius: 18px;
+  cursor: pointer;
+}
+
+.btn-modal-secondary:hover:not(:disabled) {
+  background: #333;
+  border-color: #5a5a5a;
+}
+
+.btn-modal-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-modal-danger {
+  padding: 10px 20px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #0f0f0f;
+  background: #ff8983;
+  border: none;
+  border-radius: 18px;
+  cursor: pointer;
+}
+
+.btn-modal-danger:hover:not(:disabled) {
+  background: #ff6b60;
+}
+
+.btn-modal-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.modal-confirm-text {
+  margin: 0 0 8px 0;
+  color: #e0e0e0;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  max-width: 480px;
 }
 
 .err {

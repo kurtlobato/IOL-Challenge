@@ -51,7 +51,6 @@ API en `http://localhost:8080`. Ajustá `app.playback-base-url` en [`youtube/bac
 
 - **Health (incluye MinIO y JDBC):** `GET http://localhost:8080/actuator/health`
 - **Prometheus:** `GET http://localhost:8080/actuator/prometheus`  
-  No lo expongas a Internet sin red/proxy de confianza; es métrica sin autenticación en esta configuración.
 - **Info:** `GET http://localhost:8080/actuator/info`
 - **Logging:** niveles en `application.yml`; pool JDBC (Hikari) y timeouts HTTP de MinIO configurables ahí.
 - **Resilience4j:** circuit breaker + time limiter sobre llamadas MinIO (`ObjectStorageService`); umbrales en `resilience4j.*` en `application.yml`.

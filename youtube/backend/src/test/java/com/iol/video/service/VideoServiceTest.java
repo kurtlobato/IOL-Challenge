@@ -7,6 +7,7 @@ import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -18,6 +19,7 @@ import com.iol.video.domain.VideoStatus;
 import com.iol.video.repo.VideoRepository;
 import com.iol.video.storage.ObjectStorageService;
 import com.iol.video.web.dto.CreateVideoRequest;
+import com.iol.video.web.dto.PresignedDownloadResponse;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -46,7 +48,8 @@ class VideoServiceTest {
             "http://localhost/storage",
             new AppProperties.Transcode(3, 4000L, 120, 45, 45, 7200, 180),
             new AppProperties.Ffmpeg("ffmpeg"),
-            List.of(new AppProperties.HlsVariant("480p", 480, 1_000_000)));
+            List.of(new AppProperties.HlsVariant("480p", 480, 1_000_000)),
+            null);
     videoService = new VideoService(repo, storage, app);
     lenient()
         .when(storage.publicUrlForKey(any(), any()))
@@ -174,6 +177,52 @@ class VideoServiceTest {
     when(repo.findById(id)).thenReturn(Optional.of(v));
     assertThrows(IllegalStateException.class, () -> videoService.completeUpload(id));
     verify(storage, never()).ensureObjectPresent(any());
+  }
+
+  @Test
+  void requireProcessingForTranscode_returnsVideoWhenProcessing() {
+    UUID id = UUID.randomUUID();
+    Video v =
+        new Video(
+            id,
+            "t",
+            "a.mp4",
+            "video/mp4",
+            10L,
+            VideoStatus.PROCESSING,
+            "originals/" + id + "/source",
+            "user1",
+            Instant.now(),
+            Instant.now());
+    when(repo.findById(id)).thenReturn(Optional.of(v));
+    assertEquals(v, videoService.requireProcessingForTranscode(id));
+  }
+
+  @Test
+  void requireProcessingForTranscode_throwsWhenMissing() {
+    UUID id = UUID.randomUUID();
+    when(repo.findById(id)).thenReturn(Optional.empty());
+    assertThrows(IllegalArgumentException.class, () -> videoService.requireProcessingForTranscode(id));
+  }
+
+  @Test
+  void requireProcessingForTranscode_throwsWhenNotProcessing() {
+    UUID id = UUID.randomUUID();
+    Video v =
+        new Video(
+            id,
+            "t",
+            "a.mp4",
+            "video/mp4",
+            10L,
+            VideoStatus.UPLOADED,
+            "originals/" + id + "/source",
+            "user1",
+            Instant.now(),
+            Instant.now());
+    when(repo.findById(id)).thenReturn(Optional.of(v));
+    assertThrows(
+        IllegalStateException.class, () -> videoService.requireProcessingForTranscode(id));
   }
 
   @Test
@@ -328,5 +377,148 @@ class VideoServiceTest {
     videoService.markFailed(id, "ffmpeg died");
     assertEquals(VideoStatus.FAILED, v.getStatus());
     assertEquals("ffmpeg died", v.getErrorMessage());
+  }
+
+  @Test
+  void purgeStaleCreated_removesMatchingRowsAndOriginalKey() {
+    Instant cutoff = Instant.parse("2024-01-02T00:00:00Z");
+    UUID id = UUID.randomUUID();
+    Video old =
+        new Video(
+            id,
+            "t",
+            "a.mp4",
+            "video/mp4",
+            10L,
+            VideoStatus.CREATED,
+            "originals/" + id + "/source",
+            "user1",
+            Instant.parse("2024-01-01T00:00:00Z"),
+            Instant.parse("2024-01-01T00:00:00Z"));
+    when(repo.findByStatusAndCreatedAtBefore(VideoStatus.CREATED, cutoff)).thenReturn(List.of(old));
+    assertEquals(1, videoService.purgeStaleCreated(cutoff));
+    verify(storage).removeObjectBestEffort("originals/" + id + "/source");
+    verify(repo).delete(old);
+  }
+
+  @Test
+  void purgeStaleCreated_noRowsDoesNothing() {
+    when(repo.findByStatusAndCreatedAtBefore(eq(VideoStatus.CREATED), any(Instant.class)))
+        .thenReturn(List.of());
+    assertEquals(0, videoService.purgeStaleCreated(Instant.now()));
+    verify(repo, never()).delete(any());
+    verify(storage, never()).removeObjectBestEffort(any());
+  }
+
+  @Test
+  void recordView_incrementsWhenEligible() {
+    UUID id = UUID.randomUUID();
+    Video v =
+        new Video(
+            id,
+            "t",
+            "a.mp4",
+            "video/mp4",
+            10L,
+            VideoStatus.READY,
+            "originals/" + id + "/source",
+            "user1",
+            Instant.now(),
+            Instant.now());
+    v.setManifestObjectKey("k/master.m3u8");
+    v.setDurationSeconds(100.0);
+    v.setViewCount(5L);
+    when(repo.findById(id)).thenReturn(Optional.of(v));
+    when(repo.registerUniqueView(id, "viewer-a")).thenAnswer(inv -> {
+      v.setViewCount(6L);
+      return 1;
+    });
+    assertEquals(6L, videoService.recordView(id, "viewer-a", 10.0));
+    verify(repo).registerUniqueView(id, "viewer-a");
+  }
+
+  @Test
+  void recordView_rejectsBelowTenPercent() {
+    UUID id = UUID.randomUUID();
+    Video v =
+        new Video(
+            id,
+            "t",
+            "a.mp4",
+            "video/mp4",
+            10L,
+            VideoStatus.READY,
+            "originals/" + id + "/source",
+            "user1",
+            Instant.now(),
+            Instant.now());
+    v.setDurationSeconds(200.0);
+    when(repo.findById(id)).thenReturn(Optional.of(v));
+    assertThrows(
+        IllegalArgumentException.class, () -> videoService.recordView(id, "x", 19.0));
+    verify(repo, never()).registerUniqueView(any(), any());
+  }
+
+  @Test
+  void recordView_rejectsWithoutDuration() {
+    UUID id = UUID.randomUUID();
+    Video v =
+        new Video(
+            id,
+            "t",
+            "a.mp4",
+            "video/mp4",
+            10L,
+            VideoStatus.READY,
+            "originals/" + id + "/source",
+            "user1",
+            Instant.now(),
+            Instant.now());
+    when(repo.findById(id)).thenReturn(Optional.of(v));
+    assertThrows(IllegalStateException.class, () -> videoService.recordView(id, "x", 999.0));
+    verify(repo, never()).registerUniqueView(any(), any());
+  }
+
+  @Test
+  void presignOriginalDownload_ready_allowsNonUploader() throws Exception {
+    UUID id = UUID.randomUUID();
+    Video v =
+        new Video(
+            id,
+            "t",
+            "a.mp4",
+            "video/mp4",
+            10L,
+            VideoStatus.READY,
+            "originals/" + id + "/source",
+            "owner",
+            Instant.now(),
+            Instant.now());
+    when(repo.findById(id)).thenReturn(Optional.of(v));
+    when(storage.presignedGet(eq("originals/" + id + "/source"), anyInt()))
+        .thenReturn("https://minio/get");
+    PresignedDownloadResponse r = videoService.presignOriginalDownload(id, "other-user");
+    assertEquals("https://minio/get", r.url());
+    assertEquals("a.mp4", r.filename());
+  }
+
+  @Test
+  void presignOriginalDownload_processing_requiresUploader() throws Exception {
+    UUID id = UUID.randomUUID();
+    Video v =
+        new Video(
+            id,
+            "t",
+            "a.mp4",
+            "video/mp4",
+            10L,
+            VideoStatus.PROCESSING,
+            "originals/" + id + "/source",
+            "owner",
+            Instant.now(),
+            Instant.now());
+    when(repo.findById(id)).thenReturn(Optional.of(v));
+    assertThrows(
+        SecurityException.class, () -> videoService.presignOriginalDownload(id, "intruder"));
   }
 }

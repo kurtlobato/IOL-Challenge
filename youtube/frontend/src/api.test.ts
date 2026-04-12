@@ -3,6 +3,7 @@ import {
   completeVideo,
   createVideo,
   deleteVideo,
+  getOriginalDownloadLink,
   getVideo,
   listVideos,
   uploadToPresigned,
@@ -126,29 +127,85 @@ describe("getVideo / listVideos", () => {
 
 describe("uploadToPresigned", () => {
   it("PUT con tipo de archivo", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({ ok: true, status: 200, statusText: "OK" }),
-    );
+    let xhr: {
+      method: string;
+      url: string;
+      headers: Record<string, string>;
+      status: number;
+      statusText: string;
+      onload: (() => void) | null;
+      upload: { onprogress: ((ev: ProgressEvent) => void) | null };
+      open: (m: string, u: string) => void;
+      setRequestHeader: (k: string, v: string) => void;
+      send: () => void;
+    } | null = null;
+    class MockXHR {
+      upload = { onprogress: null as ((ev: ProgressEvent) => void) | null };
+      status = 200;
+      statusText = "OK";
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      method = "";
+      url = "";
+      headers: Record<string, string> = {};
+      constructor() {
+        xhr = this;
+      }
+      open(method: string, url: string) {
+        this.method = method;
+        this.url = url;
+      }
+      setRequestHeader(name: string, value: string) {
+        this.headers[name] = value;
+      }
+      send() {
+        queueMicrotask(() => this.onload?.());
+      }
+    }
+    vi.stubGlobal("XMLHttpRequest", MockXHR as unknown as typeof XMLHttpRequest);
     const file = new File(["x"], "a.mp4", { type: "video/mp4" });
     await uploadToPresigned("https://example/presign", file, "PUT");
-    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
-      "https://example/presign",
-      expect.objectContaining({
-        method: "PUT",
-        body: file,
-        headers: { "Content-Type": "video/mp4" },
-      }),
-    );
+    expect(xhr?.method).toBe("PUT");
+    expect(xhr?.url).toBe("https://example/presign");
+    expect(xhr?.headers["Content-Type"]).toBe("video/mp4");
   });
 
   it("lanza si el PUT falla", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({ ok: false, status: 403, statusText: "Forbidden" }),
-    );
+    class MockXHR {
+      upload = { onprogress: null as ((ev: ProgressEvent) => void) | null };
+      status = 403;
+      statusText = "Forbidden";
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      method = "";
+      url = "";
+      headers: Record<string, string> = {};
+      open(_method: string, _url: string) {}
+      setRequestHeader(_name: string, _value: string) {}
+      send() {
+        queueMicrotask(() => this.onload?.());
+      }
+    }
+    vi.stubGlobal("XMLHttpRequest", MockXHR as unknown as typeof XMLHttpRequest);
     const file = new File(["x"], "a.mp4");
     await expect(uploadToPresigned("https://x", file, "PUT")).rejects.toThrow(/403/);
+  });
+});
+
+describe("getOriginalDownloadLink", () => {
+  it("omite uploaderId si no se pasa", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ url: "https://x", filename: "a.mp4" }),
+      }),
+    );
+    await expect(getOriginalDownloadLink("vid-1")).resolves.toEqual({
+      url: "https://x",
+      filename: "a.mp4",
+    });
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith("/api/videos/vid-1/original-download");
   });
 });
 

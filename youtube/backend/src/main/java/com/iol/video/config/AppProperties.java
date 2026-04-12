@@ -10,7 +10,8 @@ public record AppProperties(
     String playbackBaseUrl,
     Transcode transcode,
     Ffmpeg ffmpeg,
-    List<HlsVariant> hlsVariants) {
+    List<HlsVariant> hlsVariants,
+    StaleCreatedCleanup staleCreatedCleanup) {
 
   public AppProperties {
     if (hlsVariants == null || hlsVariants.isEmpty()) {
@@ -18,6 +19,9 @@ public record AppProperties(
           List.of(
               new HlsVariant("480p", 480, 1_000_000),
               new HlsVariant("720p", 720, 3_000_000));
+    }
+    if (staleCreatedCleanup == null) {
+      staleCreatedCleanup = new StaleCreatedCleanup(24, 3_600_000L);
     }
   }
 
@@ -52,6 +56,21 @@ public record AppProperties(
   }
 
   public record Ffmpeg(String command) {}
+
+  /**
+   * Limpieza de filas {@code CREATED} abandonadas: edad mínima y frecuencia del job ({@code poll-ms},
+   * fixed delay).
+   */
+  public record StaleCreatedCleanup(int maxAgeHours, long pollMs) {
+    public StaleCreatedCleanup {
+      if (maxAgeHours <= 0) {
+        maxAgeHours = 24;
+      }
+      if (pollMs <= 0) {
+        pollMs = 3_600_000L;
+      }
+    }
+  }
 
   /** One HLS ladder rung: output under {@code hls/{name}/index.m3u8}; bandwidth for master playlist. */
   public record HlsVariant(String name, int height, int bandwidthBps) {}

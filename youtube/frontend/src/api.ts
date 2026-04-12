@@ -11,6 +11,8 @@ export type VideoItem = {
   createdAt: string;
   /** 0–100 en cola/proceso; null en CREATED/READY/FAILED */
   progressPercent: number | null;
+  durationSeconds: number | null;
+  viewCount: number;
 };
 
 export type CreateVideoBody = {
@@ -64,6 +66,20 @@ export async function listVideos(): Promise<VideoItem[]> {
   return parseJson<VideoItem[]>(res);
 }
 
+export async function recordView(
+  id: string,
+  viewerKey: string,
+  watchedSeconds: number,
+): Promise<number> {
+  const res = await fetch(`${API}/videos/${id}/views`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ viewerKey, watchedSeconds }),
+  });
+  const data = await parseJson<{ viewCount: number }>(res);
+  return data.viewCount;
+}
+
 export function uploadToPresigned(
   uploadUrl: string,
   file: File,
@@ -100,4 +116,29 @@ export async function deleteVideo(id: string, uploaderId: string): Promise<void>
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error((err as { error?: string }).error ?? res.statusText);
   }
+}
+
+export async function updateVideoTitle(
+  id: string,
+  uploaderId: string,
+  title: string,
+): Promise<VideoItem> {
+  const res = await fetch(`${API}/videos/${id}?uploaderId=${encodeURIComponent(uploaderId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  return parseJson<VideoItem>(res);
+}
+
+export async function getOriginalDownloadLink(
+  id: string,
+  uploaderId?: string | null,
+): Promise<{ url: string; filename: string }> {
+  const q =
+    uploaderId != null && uploaderId !== ""
+      ? `?uploaderId=${encodeURIComponent(uploaderId)}`
+      : "";
+  const res = await fetch(`${API}/videos/${id}/original-download${q}`);
+  return parseJson<{ url: string; filename: string }>(res);
 }

@@ -3,7 +3,11 @@ package com.iol.video.web;
 import com.iol.video.service.VideoService;
 import com.iol.video.web.dto.CreateVideoRequest;
 import com.iol.video.web.dto.CreateVideoResponse;
+import com.iol.video.web.dto.PresignedDownloadResponse;
+import com.iol.video.web.dto.RegisterViewRequest;
+import com.iol.video.web.dto.UpdateVideoRequest;
 import com.iol.video.web.dto.VideoDto;
+import com.iol.video.web.dto.ViewCountResponse;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
@@ -15,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -45,6 +50,13 @@ public class VideoController {
     return videoService.get(id);
   }
 
+  @PostMapping("/{id}/views")
+  public ViewCountResponse registerView(
+      @PathVariable UUID id, @Valid @RequestBody RegisterViewRequest body) {
+    long count = videoService.recordView(id, body.viewerKey(), body.watchedSeconds());
+    return new ViewCountResponse(count);
+  }
+
   @GetMapping
   public List<VideoDto> list() {
     return videoService.list();
@@ -54,5 +66,19 @@ public class VideoController {
   @ResponseStatus(HttpStatus.NO_CONTENT)
   public void delete(@PathVariable UUID id, @RequestParam(required = false) String uploaderId) {
     videoService.delete(id, uploaderId);
+  }
+
+  @PatchMapping("/{id}")
+  public VideoDto patchTitle(
+      @PathVariable UUID id,
+      @RequestParam String uploaderId,
+      @Valid @RequestBody UpdateVideoRequest body) {
+    return videoService.updateTitle(id, uploaderId, body.title());
+  }
+
+  @GetMapping("/{id}/original-download")
+  public PresignedDownloadResponse originalDownload(
+      @PathVariable UUID id, @RequestParam(required = false) String uploaderId) throws Exception {
+    return videoService.presignOriginalDownload(id, uploaderId);
   }
 }

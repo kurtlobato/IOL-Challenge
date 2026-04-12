@@ -64,7 +64,9 @@ class VideoControllerTest {
                     null,
                     "user1",
                     Instant.parse("2025-01-01T00:00:00Z"),
-                    null)));
+                    null,
+                    120.0,
+                    42L)));
     mockMvc
         .perform(get("/api/videos"))
         .andExpect(status().isOk())
@@ -86,6 +88,22 @@ class VideoControllerTest {
         .when(videoService)
         .completeUpload(id);
     mockMvc.perform(post("/api/videos/" + id + "/complete")).andExpect(status().isConflict());
+  }
+
+  @Test
+  void registerViewReturnsCount() throws Exception {
+    UUID id = UUID.randomUUID();
+    when(videoService.recordView(id, "v1", 15.0)).thenReturn(3L);
+    mockMvc
+        .perform(
+            post("/api/videos/" + id + "/views")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    """
+                    {"viewerKey":"v1","watchedSeconds":15.0}
+                    """))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.viewCount").value(3));
   }
 
   @Test

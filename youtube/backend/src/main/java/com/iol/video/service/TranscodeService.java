@@ -2,8 +2,6 @@ package com.iol.video.service;
 
 import com.iol.video.config.AppProperties;
 import com.iol.video.domain.Video;
-import com.iol.video.domain.VideoStatus;
-import com.iol.video.repo.VideoRepository;
 import com.iol.video.storage.ObjectStorageService;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -33,23 +31,23 @@ public class TranscodeService {
 
   private static final int AUDIO_BPS = 128_000;
 
-  /** Subcarpeta por variante HLS para segmentos (.ts), separados del index.m3u8. */
-  private static final String HLS_SEGMENT_SUBDIR = "segments";
-
-  private final VideoRepository repo;
   private final ObjectStorageService storage;
   private final AppProperties app;
   private final VideoService videoService;
 
   public TranscodeService(
-      VideoRepository repo,
-      ObjectStorageService storage,
-      AppProperties app,
-      VideoService videoService) {
-    this.repo = repo;
+      ObjectStorageService storage, AppProperties app, VideoService videoService) {
     this.storage = storage;
     this.app = app;
     this.videoService = videoService;
+  }
+
+  private static String abbrevTitle(String title) {
+    if (title == null) {
+      return "";
+    }
+    String t = title.replace('\n', ' ').trim();
+    return t.length() <= 120 ? t : t.substring(0, 120) + "…";
   }
 
   /**
@@ -61,13 +59,13 @@ public class TranscodeService {
    * @throws IllegalStateException si el estado no es {@code PROCESSING}
    */
   public void runPipeline(UUID videoId) throws Exception {
-    Video meta =
-        repo
-            .findById(videoId)
-            .orElseThrow(() -> new IllegalArgumentException("Video not found"));
-    if (meta.getStatus() != VideoStatus.PROCESSING) {
-      throw new IllegalStateException("Expected PROCESSING, got " + meta.getStatus());
-    }
+    Video meta = videoService.requireProcessingForTranscode(videoId);
+    log.info(
+        "Pipeline inicio: videoId={} título=\"{}\" variantesHls={} originalKey={}",
+        videoId,
+        abbrevTitle(meta.getTitle()),
+        app.hlsVariants().size(),
+        meta.getOriginalObjectKey());
     ScheduledExecutorService leaseRenewer =
         Executors.newSingleThreadScheduledExecutor(
             r -> {
@@ -93,8 +91,18 @@ public class TranscodeService {
       Path tmp = Files.createTempDirectory("transcode-" + videoId);
       try {
         Path input = tmp.resolve("source");
+        log.info("Descarga original desde storage: videoId={}", videoId);
         try (InputStream in = storage.getObject(meta.getOriginalObjectKey())) {
           Files.copy(in, input, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
+        long inputBytes = Files.size(input);
+        log.info("Original en disco: videoId={} bytes={}", videoId, inputBytes);
+        Double probed = probeDurationSeconds(input);
+        if (probed != null) {
+          videoService.setDurationSeconds(videoId, probed);
+          log.info("ffprobe duración: videoId={} segundos≈{}", videoId, probed);
+        } else {
+          log.info("ffprobe duración: videoId={} (no disponible)", videoId);
         }
         videoService.setTranscodeProgress(videoId, 12);
         Path hlsDir = tmp.resolve("hls");
@@ -109,17 +117,25 @@ public class TranscodeService {
           storage.uploadFile(thumbKey, thumbnail, "image/jpeg");
           videoService.setTranscodeOutputPrefix(videoId, prefix);
           videoService.setTranscodeProgress(videoId, 28);
+          log.info("Miniatura generada y subida: videoId={} key={}", videoId, thumbKey);
         } else {
           videoService.setTranscodeProgress(videoId, 25);
+          log.info("Miniatura omitida (ffmpeg sin archivo): videoId={}", videoId);
         }
 
         List<AppProperties.HlsVariant> variants = app.hlsVariants();
         int n = variants.size();
         for (int i = 0; i < n; i++) {
           AppProperties.HlsVariant v = variants.get(i);
+          log.info(
+              "Variante HLS {}/{}: videoId={} nombre={} height={}",
+              i + 1,
+              n,
+              videoId,
+              v.name(),
+              v.height());
           Path variantDir = hlsDir.resolve(v.name());
           Files.createDirectories(variantDir);
-          Files.createDirectories(variantDir.resolve(HLS_SEGMENT_SUBDIR));
           runFfmpegVariant(input, variantDir, v);
           int pct = 28 + (int) Math.round(55.0 * (i + 1) / n);
           videoService.setTranscodeProgress(videoId, Math.min(pct, 83));
@@ -132,13 +148,43 @@ public class TranscodeService {
         try (Stream<Path> walk = Files.walk(hlsDir)) {
           outs = walk.filter(Files::isRegularFile).toList();
         }
-        for (Path p : outs) {
+        long tsCount =
+            outs.stream()
+                .map(p -> p.getFileName().toString().toLowerCase())
+                .filter(fn -> fn.endsWith(".ts"))
+                .count();
+        int totalOut = outs.size();
+        log.info(
+            "Subida artefactos HLS: videoId={} archivosTotales={} segmentosTs={}",
+            videoId,
+            totalOut,
+            tsCount);
+        int step = Math.max(1, totalOut / 10);
+        for (int fi = 0; fi < outs.size(); fi++) {
+          Path p = outs.get(fi);
           String rel = hlsDir.relativize(p).toString().replace('\\', '/');
           String key = prefix + rel;
           storage.uploadFile(key, p, contentTypeForSegment(p));
+          int oneBased = fi + 1;
+          if (totalOut <= 24
+              || oneBased == 1
+              || oneBased == totalOut
+              || oneBased % step == 0) {
+            log.info(
+                "Subida progreso: videoId={} {}/{} rel={}",
+                videoId,
+                oneBased,
+                totalOut,
+                rel);
+          }
         }
         videoService.setTranscodeProgress(videoId, 95);
         videoService.markAsReady(videoId, prefix, prefix + "master.m3u8");
+        log.info(
+            "Pipeline fin OK: videoId={} prefijoSalida={} manifest={}",
+            videoId,
+            prefix,
+            prefix + "master.m3u8");
       } finally {
         deleteTree(tmp);
       }
@@ -156,6 +202,47 @@ public class TranscodeService {
         Thread.currentThread().interrupt();
       }
     }
+  }
+
+  private Double probeDurationSeconds(Path input) {
+    try {
+      List<String> cmd = new ArrayList<>();
+      cmd.add(ffprobeBinary());
+      cmd.addAll(
+          List.of(
+              "-v",
+              "error",
+              "-show_entries",
+              "format=duration",
+              "-of",
+              "default=noprint_wrappers=1:nokey=1",
+              input.toAbsolutePath().toString()));
+      ProcessBuilder pb = new ProcessBuilder(cmd);
+      pb.redirectErrorStream(true);
+      Process proc = pb.start();
+      long sec = Math.min(120L, app.transcode().ffmpegThumbnailTimeoutSeconds());
+      if (!proc.waitFor(sec, TimeUnit.SECONDS)) {
+        destroyFfmpegProcess(proc);
+        log.warn("ffprobe duration exceeded {}s timeout", sec);
+        return null;
+      }
+      String out = new String(proc.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+      if (out.isEmpty()) {
+        return null;
+      }
+      return Double.parseDouble(out);
+    } catch (Exception e) {
+      log.warn("ffprobe duration failed: {}", e.getMessage());
+      return null;
+    }
+  }
+
+  private String ffprobeBinary() {
+    String ffmpeg = app.ffmpeg().command();
+    if (ffmpeg.endsWith("ffmpeg")) {
+      return ffmpeg.substring(0, ffmpeg.length() - 6) + "ffprobe";
+    }
+    return "ffprobe";
   }
 
   private void runFfmpegThumbnail(Path input, Path output) {
@@ -190,8 +277,9 @@ public class TranscodeService {
   }
 
   /**
-   * Codifica una variante HLS VOD en {@code variantDir} (cwd de ffmpeg), con segmentos bajo {@link
-   * #HLS_SEGMENT_SUBDIR}. Ajusta video bitrate restando el audio fijo {@link #AUDIO_BPS}.
+   * Codifica una variante HLS VOD en {@code variantDir} (cwd de ffmpeg). Los .ts van junto a
+   * {@code index.m3u8}: con subcarpeta, ffmpeg escribe bien los archivos pero el playlist referencia
+   * solo {@code segNNN.ts} y el reproductor pide rutas incorrectas (404).
    */
   private void runFfmpegVariant(Path input, Path variantDir, AppProperties.HlsVariant v)
       throws Exception {
@@ -226,7 +314,7 @@ public class TranscodeService {
             "-hls_playlist_type",
             "vod",
             "-hls_segment_filename",
-            HLS_SEGMENT_SUBDIR + "/seg%03d.ts",
+            "seg%03d.ts",
             "-f",
             "hls",
             "index.m3u8"));

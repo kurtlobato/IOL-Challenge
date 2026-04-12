@@ -29,6 +29,12 @@ public class RestExceptionHandler {
         .body(Map.of("error", e.getMessage() != null ? e.getMessage() : "Conflict"));
   }
 
+  @ExceptionHandler(SecurityException.class)
+  public ResponseEntity<Map<String, String>> forbidden(SecurityException e) {
+    return ResponseEntity.status(HttpStatus.FORBIDDEN)
+        .body(Map.of("error", e.getMessage() != null ? e.getMessage() : "Forbidden"));
+  }
+
   @ExceptionHandler(CallNotPermittedException.class)
   public ResponseEntity<Map<String, String>> circuitOpen(CallNotPermittedException e) {
     return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)

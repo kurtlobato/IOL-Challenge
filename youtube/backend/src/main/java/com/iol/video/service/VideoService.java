@@ -7,6 +7,7 @@ import com.iol.video.repo.VideoRepository;
 import com.iol.video.storage.ObjectStorageService;
 import com.iol.video.web.dto.CreateVideoRequest;
 import com.iol.video.web.dto.CreateVideoResponse;
+import com.iol.video.web.dto.PresignedDownloadResponse;
 import com.iol.video.web.dto.VideoDto;
 import java.time.Instant;
 import java.util.Comparator;
@@ -56,6 +57,14 @@ public class VideoService {
             now,
             now);
     repo.save(v);
+    log.info(
+        "Alta video (CREATED, pendiente PUT al bucket): id={} uploaderId={} título=\"{}\" filename={} contentType={} sizeBytes={}",
+        id,
+        req.uploaderId(),
+        abbrev(req.title(), 120),
+        abbrev(req.originalFilename(), 120),
+        req.contentType(),
+        req.sizeBytes());
     String uploadUrl = storage.presignedPut(key, app.presignTtlSeconds());
     return new CreateVideoResponse(
         id,
@@ -75,6 +84,12 @@ public class VideoService {
     storage.ensureObjectPresent(v.getOriginalObjectKey());
     v.setStatus(VideoStatus.UPLOADED);
     v.setUpdatedAt(Instant.now());
+    log.info(
+        "Upload original verificado → UPLOADED: id={} key={} uploaderId={} título=\"{}\"",
+        id,
+        v.getOriginalObjectKey(),
+        v.getUploaderId(),
+        abbrev(v.getTitle(), 120));
   }
 
   @Transactional(readOnly = true)
@@ -89,6 +104,53 @@ public class VideoService {
    * Lista todos los videos: primero los {@link VideoStatus#READY}, luego el resto, ordenados por
    * {@code createdAt} dentro de cada grupo.
    */
+  /**
+   * Persiste la duración detectada en transcodificación (segundos). Ignora valores no finitos o
+   * no positivos.
+   */
+  @Transactional
+  public void setDurationSeconds(UUID id, double seconds) {
+    Video v = repo.findById(id).orElseThrow(() -> new IllegalArgumentException("Video not found"));
+    if (Double.isFinite(seconds) && seconds > 0) {
+      v.setDurationSeconds(seconds);
+      v.setUpdatedAt(Instant.now());
+    }
+  }
+
+  /**
+   * Cuenta una visualización por {@code viewerKey} si el tiempo visto alcanza al menos el 10 %
+   * de la duración conocida del video. Requiere {@link VideoStatus#READY} y duración persistida.
+   *
+   * @return contador de vistas tras la operación (sin incrementar si el viewer ya contó)
+   */
+  @Transactional
+  public long recordView(UUID id, String viewerKey, double watchedSeconds) {
+    if (viewerKey == null || viewerKey.isBlank()) {
+      throw new IllegalArgumentException("viewerKey required");
+    }
+    String key = viewerKey.trim();
+    if (key.length() > 128) {
+      throw new IllegalArgumentException("viewerKey too long");
+    }
+    if (!Double.isFinite(watchedSeconds) || watchedSeconds < 0) {
+      throw new IllegalArgumentException("watchedSeconds invalid");
+    }
+    Video v = repo.findById(id).orElseThrow(() -> new IllegalArgumentException("Video not found"));
+    if (v.getStatus() != VideoStatus.READY) {
+      throw new IllegalStateException("Video is not ready for playback");
+    }
+    Double dur = v.getDurationSeconds();
+    if (dur == null || dur <= 0 || !Double.isFinite(dur)) {
+      throw new IllegalStateException("Duration not available yet");
+    }
+    double minWatch = dur * 0.1;
+    if (watchedSeconds + 1e-6 < minWatch) {
+      throw new IllegalArgumentException("Must watch at least 10% of the video");
+    }
+    repo.registerUniqueView(id, key);
+    return repo.findById(id).orElseThrow().getViewCount();
+  }
+
   @Transactional(readOnly = true)
   public List<VideoDto> list() {
     return repo.findAll().stream()
@@ -105,6 +167,20 @@ public class VideoService {
    * {@link VideoStatus#PROCESSING} cuyo lease ya venció (worker muerto). En ambos casos renueva el
    * lease hasta {@code app.transcode.leaseTtlSeconds}.
    */
+  /**
+   * Metadatos del video para el pipeline de transcodificación: debe existir y estar en {@link
+   * VideoStatus#PROCESSING}.
+   */
+  @Transactional(readOnly = true)
+  public Video requireProcessingForTranscode(UUID id) {
+    Video v =
+        repo.findById(id).orElseThrow(() -> new IllegalArgumentException("Video not found"));
+    if (v.getStatus() != VideoStatus.PROCESSING) {
+      throw new IllegalStateException("Expected PROCESSING, got " + v.getStatus());
+    }
+    return v;
+  }
+
   @Transactional
   public Optional<Video> claimNextForTranscode() {
     Instant leaseUntil = Instant.now().plusSeconds(app.transcode().leaseTtlSeconds());
@@ -120,6 +196,11 @@ public class VideoService {
                   return repo.save(v);
                 });
     if (fromUpload.isPresent()) {
+      Video v = fromUpload.get();
+      log.info(
+          "Cola transcode: reclamado desde UPLOADED → PROCESSING id={} título=\"{}\"",
+          v.getId(),
+          abbrev(v.getTitle(), 120));
       return fromUpload;
     }
     return repo
@@ -130,7 +211,12 @@ public class VideoService {
             v -> {
               v.setProcessingLeaseUntil(leaseUntil);
               v.setUpdatedAt(Instant.now());
-              return repo.save(v);
+              Video saved = repo.save(v);
+              log.info(
+                  "Cola transcode: reclamado PROCESSING con lease vencido (reintento worker) id={} título=\"{}\"",
+                  saved.getId(),
+                  abbrev(saved.getTitle(), 120));
+              return saved;
             });
   }
 
@@ -200,6 +286,11 @@ public class VideoService {
     v.setProcessingLeaseUntil(null);
     v.setProcessingProgress(null);
     v.setUpdatedAt(Instant.now());
+    log.info(
+        "Transcode OK → READY: id={} manifestKey={} título=\"{}\"",
+        id,
+        manifestObjectKey,
+        abbrev(v.getTitle(), 120));
   }
 
   /** Persiste fallo de transcodificación, truncando el mensaje a 4000 caracteres. */
@@ -217,6 +308,11 @@ public class VideoService {
     String msg = errorMessage == null ? "Unknown error" : errorMessage;
     v.setErrorMessage(msg.length() > 4000 ? msg.substring(0, 4000) : msg);
     v.setUpdatedAt(Instant.now());
+    log.warn(
+        "Transcode → FAILED: id={} título=\"{}\" error={}",
+        id,
+        abbrev(v.getTitle(), 120),
+        abbrev(msg, 500));
   }
 
   @Transactional
@@ -225,6 +321,81 @@ public class VideoService {
     if (uploaderId == null || !uploaderId.equals(v.getUploaderId())) {
       throw new SecurityException("No tienes permiso para eliminar este video.");
     }
+    log.info(
+        "Borrado por usuario: id={} uploaderId={} estado={} título=\"{}\"",
+        id,
+        uploaderId,
+        v.getStatus(),
+        abbrev(v.getTitle(), 120));
     repo.delete(v);
+  }
+
+  @Transactional
+  public VideoDto updateTitle(UUID id, String uploaderId, String title) {
+    Video v = repo.findById(id).orElseThrow(() -> new IllegalArgumentException("Video not found"));
+    if (uploaderId == null || uploaderId.isBlank()) {
+      throw new IllegalArgumentException("uploaderId required");
+    }
+    if (!uploaderId.equals(v.getUploaderId())) {
+      throw new SecurityException("No tienes permiso para editar este video.");
+    }
+    String t = title == null ? "" : title.trim();
+    if (t.isEmpty()) {
+      throw new IllegalArgumentException("title required");
+    }
+    if (t.length() > 512) {
+      throw new IllegalArgumentException("title too long");
+    }
+    v.setTitle(t);
+    v.setUpdatedAt(Instant.now());
+    repo.save(v);
+    return VideoDto.from(v, app.playbackBaseUrl(), storage);
+  }
+
+  @Transactional(readOnly = true)
+  public PresignedDownloadResponse presignOriginalDownload(UUID id, String uploaderId)
+      throws Exception {
+    Video v = repo.findById(id).orElseThrow(() -> new IllegalArgumentException("Video not found"));
+    if (v.getStatus() == VideoStatus.CREATED) {
+      throw new IllegalStateException("El archivo original aún no está disponible.");
+    }
+    if (v.getStatus() != VideoStatus.READY) {
+      if (uploaderId == null || uploaderId.isBlank()) {
+        throw new IllegalArgumentException("uploaderId required");
+      }
+      if (!uploaderId.equals(v.getUploaderId())) {
+        throw new SecurityException("No tienes permiso para descargar este archivo.");
+      }
+    }
+    String url = storage.presignedGet(v.getOriginalObjectKey(), app.presignTtlSeconds());
+    return new PresignedDownloadResponse(url, v.getOriginalFilename());
+  }
+
+  /**
+   * Borra vídeos en {@link VideoStatus#CREATED} con {@code createdAt} anterior al umbral; intenta
+   * quitar el original en almacenamiento antes de borrar la fila.
+   *
+   * @return cantidad de filas eliminadas
+   */
+  @Transactional
+  public int purgeStaleCreated(Instant createdBefore) {
+    List<Video> stale =
+        repo.findByStatusAndCreatedAtBefore(VideoStatus.CREATED, createdBefore);
+    for (Video v : stale) {
+      storage.removeObjectBestEffort(v.getOriginalObjectKey());
+      repo.delete(v);
+    }
+    if (!stale.isEmpty()) {
+      log.info("purgeStaleCreated: removed {} CREATED videos older than {}", stale.size(), createdBefore);
+    }
+    return stale.size();
+  }
+
+  private static String abbrev(String s, int max) {
+    if (s == null) {
+      return "";
+    }
+    String t = s.replace('\n', ' ').trim();
+    return t.length() <= max ? t : t.substring(0, max) + "…";
   }
 }
