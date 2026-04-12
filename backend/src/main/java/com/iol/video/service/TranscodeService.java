@@ -28,6 +28,9 @@ public class TranscodeService {
 
   private static final int AUDIO_BPS = 128_000;
 
+  /** Subcarpeta por variante HLS para segmentos (.ts), separados del index.m3u8. */
+  private static final String HLS_SEGMENT_SUBDIR = "segments";
+
   private final VideoRepository repo;
   private final ObjectStorageService storage;
   private final AppProperties app;
@@ -98,6 +101,7 @@ public class TranscodeService {
         for (AppProperties.HlsVariant v : variants) {
           Path variantDir = hlsDir.resolve(v.name());
           Files.createDirectories(variantDir);
+          Files.createDirectories(variantDir.resolve(HLS_SEGMENT_SUBDIR));
           runFfmpegVariant(input, variantDir, v);
         }
         String masterBody = buildMasterPlaylist(variants);
@@ -186,7 +190,7 @@ public class TranscodeService {
             "-hls_playlist_type",
             "vod",
             "-hls_segment_filename",
-            "seg%03d.ts",
+            HLS_SEGMENT_SUBDIR + "/seg%03d.ts",
             "-f",
             "hls",
             "index.m3u8"));
