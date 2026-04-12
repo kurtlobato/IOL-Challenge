@@ -96,6 +96,7 @@ public class TranscodeService {
         try (InputStream in = storage.getObject(meta.getOriginalObjectKey())) {
           Files.copy(in, input, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         }
+        videoService.setTranscodeProgress(videoId, 12);
         Path hlsDir = tmp.resolve("hls");
         Files.createDirectories(hlsDir);
 
@@ -107,15 +108,23 @@ public class TranscodeService {
           String thumbKey = prefix + "thumbnail.jpg";
           storage.uploadFile(thumbKey, thumbnail, "image/jpeg");
           videoService.setTranscodeOutputPrefix(videoId, prefix);
+          videoService.setTranscodeProgress(videoId, 28);
+        } else {
+          videoService.setTranscodeProgress(videoId, 25);
         }
 
         List<AppProperties.HlsVariant> variants = app.hlsVariants();
-        for (AppProperties.HlsVariant v : variants) {
+        int n = variants.size();
+        for (int i = 0; i < n; i++) {
+          AppProperties.HlsVariant v = variants.get(i);
           Path variantDir = hlsDir.resolve(v.name());
           Files.createDirectories(variantDir);
           Files.createDirectories(variantDir.resolve(HLS_SEGMENT_SUBDIR));
           runFfmpegVariant(input, variantDir, v);
+          int pct = 28 + (int) Math.round(55.0 * (i + 1) / n);
+          videoService.setTranscodeProgress(videoId, Math.min(pct, 83));
         }
+        videoService.setTranscodeProgress(videoId, 85);
         String masterBody = buildMasterPlaylist(variants);
         Files.writeString(hlsDir.resolve("master.m3u8"), masterBody, StandardCharsets.UTF_8);
 
@@ -128,6 +137,7 @@ public class TranscodeService {
           String key = prefix + rel;
           storage.uploadFile(key, p, contentTypeForSegment(p));
         }
+        videoService.setTranscodeProgress(videoId, 95);
         videoService.markAsReady(videoId, prefix, prefix + "master.m3u8");
       } finally {
         deleteTree(tmp);
@@ -307,7 +317,8 @@ public class TranscodeService {
                   p -> {
                     try {
                       Files.deleteIfExists(p);
-                    } catch (Exception ignored) {
+                    } catch (Exception e) {
+                      log.debug("No se pudo borrar {}: {}", p, e.getMessage());
                     }
                   });
         }

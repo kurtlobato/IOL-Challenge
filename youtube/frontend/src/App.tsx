@@ -16,6 +16,7 @@ import "./App.css";
 export default function App() {
   const [items, setItems] = useState<VideoItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [uploadPercent, setUploadPercent] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   
   // Modal state
@@ -54,11 +55,21 @@ export default function App() {
     refresh().catch((e) => console.error(e));
   }, [refresh]);
 
+  useEffect(() => {
+    if (!selected) return;
+    if (selected.status !== "UPLOADED" && selected.status !== "PROCESSING") return;
+    const id = window.setInterval(() => {
+      refresh().catch((e) => console.error(e));
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [selected?.id, selected?.status, refresh]);
+
   async function handleUpload(e: React.FormEvent) {
     e.preventDefault();
     if (!file) return;
     setError(null);
     setLoading(true);
+    setUploadPercent(0);
     try {
       const created = await createVideo({
         title: title.trim() || "Sin título",
@@ -67,7 +78,9 @@ export default function App() {
         sizeBytes: file.size,
         uploaderId: myUploaderId,
       });
-      await uploadToPresigned(created.uploadUrl, file, created.method);
+      await uploadToPresigned(created.uploadUrl, file, created.method, (p) =>
+        setUploadPercent(p),
+      );
       await completeVideo(created.id);
       await refresh();
       
@@ -80,6 +93,7 @@ export default function App() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
+      setUploadPercent(null);
     }
   }
 
@@ -89,8 +103,8 @@ export default function App() {
     for (let i = 0; i < max; i++) {
       await new Promise((r) => setTimeout(r, delay));
       const v = await getVideo(id);
+      await refresh();
       if (v.status === "READY" || v.status === "FAILED") {
-        await refresh();
         return;
       }
     }
@@ -109,8 +123,18 @@ export default function App() {
     }
   }
 
-  const openModal = () => { setIsModalOpen(true); setError(null); };
-  const closeModal = () => { setIsModalOpen(false); setTitle(""); setFile(null); setError(null); };
+  const openModal = () => {
+    setIsModalOpen(true);
+    setError(null);
+    setUploadPercent(null);
+  };
+  const closeModal = () => {
+    setIsModalOpen(false);
+    setTitle("");
+    setFile(null);
+    setError(null);
+    setUploadPercent(null);
+  };
 
   return (
     <>
@@ -136,7 +160,19 @@ export default function App() {
                 </div>
               ) : (
                 <div style={{aspectRatio: "16/9", background: "#000", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "12px"}}>
-                  <span style={{color: "#aaa"}}>Procesando video... ({selected.status})</span>
+                  <span style={{color: "#aaa"}}>
+                    {selected.status === "UPLOADED"
+                      ? "En cola"
+                      : selected.status === "PROCESSING"
+                        ? "Procesando"
+                        : selected.status === "CREATED"
+                          ? "Subiendo"
+                          : selected.status}
+                    …
+                    {selected.progressPercent != null
+                      ? ` ${selected.progressPercent}%`
+                      : ""}
+                  </span>
                 </div>
               )}
             </div>
@@ -153,7 +189,7 @@ export default function App() {
                   key={v.id}
                   className={`related-row ${v.status === "READY" ? "related-row-ready" : "related-row-pending"}`}
                   onClick={() => {
-                    if (v.status === "READY") setSelected(v);
+                    setSelected(v);
                   }}
                 >
                   <div className="related-thumb">
@@ -191,7 +227,10 @@ export default function App() {
                     >
                       {v.title}
                     </h4>
-                    <span className={`pill pill-${v.status}`}>{v.status}</span>
+                    <span className={`pill pill-${v.status}`}>
+                      {v.status}
+                      {v.progressPercent != null ? ` ${v.progressPercent}%` : ""}
+                    </span>
                   </div>
                 </div>
               ))}
@@ -215,7 +254,7 @@ export default function App() {
               <div
                 className="thumbnail"
                 onClick={() => {
-                  if (openable) setSelected(v);
+                  setSelected(v);
                 }}
               >
                 {v.thumbnailUrl ? (
@@ -254,7 +293,7 @@ export default function App() {
                   <h3
                     className="card-title"
                     onClick={() => {
-                      if (openable) setSelected(v);
+                      setSelected(v);
                     }}
                   >
                     {v.title}
@@ -262,7 +301,10 @@ export default function App() {
                   <p className="card-meta">IOL Channel</p>
                   <p className="card-meta">{formatRelativeUploadDate(v.createdAt)}</p>
                   <div>
-                    <span className={`pill pill-${v.status}`}>{v.status}</span>
+                    <span className={`pill pill-${v.status}`}>
+                      {v.status}
+                      {v.progressPercent != null ? ` ${v.progressPercent}%` : ""}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -341,13 +383,38 @@ export default function App() {
                    </div>
                  </div>
 
-                 {error && <p className="err">{error}</p>}
-                 
-                 <div style={{display: "flex", justifyContent: "center", marginTop: "16px"}}>
-                   <button type="submit" disabled={loading || !file} className="btn-primary" style={{padding: "12px 32px", fontSize: "1rem"}}>
-                     {loading ? "Subiendo..." : "Seleccionar y Subir"}
-                   </button>
-                 </div>
+                {error && <p className="err">{error}</p>}
+
+                {loading && uploadPercent != null ? (
+                  <div style={{ width: "100%", maxWidth: 480 }}>
+                    <div
+                      style={{
+                        height: 8,
+                        borderRadius: 4,
+                        background: "#333",
+                        overflow: "hidden",
+                      }}
+                    >
+                      <div
+                        style={{
+                          height: "100%",
+                          width: `${uploadPercent}%`,
+                          background: "#3ea6ff",
+                          transition: "width 0.15s ease",
+                        }}
+                      />
+                    </div>
+                    <p style={{ margin: "8px 0 0", textAlign: "center", color: "#aaa", fontSize: "0.9rem" }}>
+                      Subiendo… {uploadPercent}%
+                    </p>
+                  </div>
+                ) : null}
+
+                <div style={{display: "flex", justifyContent: "center", marginTop: "16px"}}>
+                  <button type="submit" disabled={loading || !file} className="btn-primary" style={{padding: "12px 32px", fontSize: "1rem"}}>
+                    {loading ? "Subiendo..." : "Seleccionar y Subir"}
+                  </button>
+                </div>
                </form>
             </div>
           </div>

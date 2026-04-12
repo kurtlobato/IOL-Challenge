@@ -15,7 +15,8 @@ public record VideoDto(
     String thumbnailUrl,
     String errorMessage,
     String uploaderId,
-    Instant createdAt) {
+    Instant createdAt,
+    Integer progressPercent) {
 
   /**
    * En READY construye manifest y miniatura a partir de la clave del master (sustituye {@code
@@ -33,6 +34,13 @@ public record VideoDto(
       thumb =
           storage.publicUrlForKey(v.getOutputPrefix() + "thumbnail.jpg", playbackBaseUrl);
     }
+    Integer progressPercent =
+        switch (v.getStatus()) {
+          case UPLOADED -> 0;
+          case PROCESSING ->
+              v.getProcessingProgress() != null ? v.getProcessingProgress() : 1;
+          default -> null;
+        };
     return new VideoDto(
         v.getId(),
         v.getTitle(),
@@ -41,6 +49,7 @@ public record VideoDto(
         thumb,
         v.getErrorMessage(),
         v.getUploaderId(),
-        v.getCreatedAt());
+        v.getCreatedAt(),
+        progressPercent);
   }
 }

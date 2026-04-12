@@ -36,7 +36,7 @@ public class VideoController {
 
   @PostMapping("/{id}/complete")
   @ResponseStatus(HttpStatus.NO_CONTENT)
-  public void complete(@PathVariable UUID id) {
+  public void complete(@PathVariable UUID id) throws Exception {
     videoService.completeUpload(id);
   }
 

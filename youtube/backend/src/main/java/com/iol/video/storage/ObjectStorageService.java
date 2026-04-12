@@ -10,6 +10,7 @@ import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
 import io.minio.StatObjectArgs;
+import io.minio.errors.ErrorResponseException;
 import io.minio.http.Method;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -60,14 +61,46 @@ public class ObjectStorageService {
                     .build()));
   }
 
-  public boolean objectExists(String objectKey) {
+  /**
+   * Comprueba por HEAD/stat que el objeto exista, bajo circuit breaker y time limiter.
+   *
+   * <p>Si MinIO responde objeto inexistente, lanza {@link IllegalStateException} con mensaje
+   * estable. Cualquier otro fallo (red, credenciales, circuito abierto, timeout) se propaga para
+   * que el límite HTTP pueda mapearlo.
+   */
+  public void ensureObjectPresent(String objectKey) throws Exception {
     try {
-      client.statObject(
-          StatObjectArgs.builder().bucket(props.bucket()).object(objectKey).build());
-      return true;
+      executeMinio(
+          () -> {
+            client.statObject(
+                StatObjectArgs.builder().bucket(props.bucket()).object(objectKey).build());
+            return null;
+          });
     } catch (Exception e) {
+      ErrorResponseException ere = findErrorResponse(e);
+      if (ere != null && isObjectNotFound(ere)) {
+        throw new IllegalStateException("Original object not found in storage");
+      }
+      throw e;
+    }
+  }
+
+  private static ErrorResponseException findErrorResponse(Throwable t) {
+    while (t != null) {
+      if (t instanceof ErrorResponseException ere) {
+        return ere;
+      }
+      t = t.getCause();
+    }
+    return null;
+  }
+
+  private static boolean isObjectNotFound(ErrorResponseException ere) {
+    if (ere.errorResponse() == null) {
       return false;
     }
+    String code = ere.errorResponse().code();
+    return "NoSuchKey".equals(code) || "NotFound".equals(code);
   }
 
   public void uploadFile(String objectKey, Path file, String contentType) throws Exception {

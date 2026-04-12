@@ -3,6 +3,8 @@ package com.iol.video.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -112,7 +114,7 @@ class VideoServiceTest {
   }
 
   @Test
-  void completeUpload_requiresCreatedAndObjectExists() {
+  void completeUpload_requiresCreatedAndObjectExists() throws Exception {
     UUID id = UUID.randomUUID();
     Video v =
         new Video(
@@ -127,12 +129,35 @@ class VideoServiceTest {
             Instant.now(),
             Instant.now());
     when(repo.findById(id)).thenReturn(Optional.of(v));
-    when(storage.objectExists(v.getOriginalObjectKey())).thenReturn(false);
+    doThrow(new IllegalStateException("Original object not found in storage"))
+        .when(storage)
+        .ensureObjectPresent(v.getOriginalObjectKey());
     assertThrows(IllegalStateException.class, () -> videoService.completeUpload(id));
   }
 
   @Test
-  void completeUpload_rejectsWrongStatus() {
+  void completeUpload_setsUploadedWhenObjectPresent() throws Exception {
+    UUID id = UUID.randomUUID();
+    Video v =
+        new Video(
+            id,
+            "t",
+            "a.mp4",
+            "video/mp4",
+            10L,
+            VideoStatus.CREATED,
+            "originals/" + id + "/source",
+            "user1",
+            Instant.now(),
+            Instant.now());
+    when(repo.findById(id)).thenReturn(Optional.of(v));
+    doNothing().when(storage).ensureObjectPresent(v.getOriginalObjectKey());
+    videoService.completeUpload(id);
+    assertEquals(VideoStatus.UPLOADED, v.getStatus());
+  }
+
+  @Test
+  void completeUpload_rejectsWrongStatus() throws Exception {
     UUID id = UUID.randomUUID();
     Video v =
         new Video(
@@ -148,7 +173,7 @@ class VideoServiceTest {
             Instant.now());
     when(repo.findById(id)).thenReturn(Optional.of(v));
     assertThrows(IllegalStateException.class, () -> videoService.completeUpload(id));
-    verify(storage, never()).objectExists(any());
+    verify(storage, never()).ensureObjectPresent(any());
   }
 
   @Test
@@ -173,6 +198,7 @@ class VideoServiceTest {
     Optional<Video> out = videoService.claimNextForTranscode();
     assertTrue(out.isPresent());
     assertEquals(VideoStatus.PROCESSING, out.get().getStatus());
+    assertEquals(5, out.get().getProcessingProgress());
     assertTrue(out.get().getProcessingLeaseUntil().isAfter(Instant.now()));
   }
 
@@ -231,6 +257,27 @@ class VideoServiceTest {
     when(repo.findById(id)).thenReturn(Optional.of(v));
     videoService.setTranscodeOutputPrefix(id, "transcoded/" + id);
     assertEquals("transcoded/" + id + "/", v.getOutputPrefix());
+  }
+
+  @Test
+  void setTranscodeProgress_updatesWhenProcessing() {
+    UUID id = UUID.randomUUID();
+    Video v =
+        new Video(
+            id,
+            "t",
+            "a.mp4",
+            "video/mp4",
+            10L,
+            VideoStatus.PROCESSING,
+            "originals/" + id + "/source",
+            "user1",
+            Instant.now(),
+            Instant.now());
+    when(repo.findById(id)).thenReturn(Optional.of(v));
+    when(repo.save(any())).thenAnswer(inv -> inv.getArgument(0));
+    videoService.setTranscodeProgress(id, 42);
+    assertEquals(42, v.getProcessingProgress());
   }
 
   @Test

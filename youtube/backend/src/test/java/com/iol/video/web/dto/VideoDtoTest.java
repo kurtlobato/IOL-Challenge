@@ -41,6 +41,7 @@ class VideoDtoTest {
     VideoDto dto = VideoDto.from(v, "http://pb/", storage);
     assertNull(dto.manifestUrl());
     assertEquals("http://pb/bucket/transcoded/" + id + "/thumbnail.jpg", dto.thumbnailUrl());
+    assertEquals(1, dto.progressPercent());
   }
 
   @Test
@@ -60,5 +61,25 @@ class VideoDtoTest {
             Instant.parse("2025-01-01T00:00:00Z"));
     VideoDto dto = VideoDto.from(v, "http://pb/", storage);
     assertNull(dto.thumbnailUrl());
+    assertEquals(1, dto.progressPercent());
+  }
+
+  @Test
+  void from_uploaded_showsZeroPercent() {
+    UUID id = UUID.randomUUID();
+    Video v =
+        new Video(
+            id,
+            "t",
+            "a.mp4",
+            "video/mp4",
+            10L,
+            VideoStatus.UPLOADED,
+            "originals/" + id + "/source",
+            "user1",
+            Instant.parse("2025-01-01T00:00:00Z"),
+            Instant.parse("2025-01-01T00:00:00Z"));
+    VideoDto dto = VideoDto.from(v, "http://pb/", storage);
+    assertEquals(0, dto.progressPercent());
   }
 }

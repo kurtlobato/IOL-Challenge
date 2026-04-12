@@ -62,15 +62,13 @@ public class VideoService {
   }
 
   @Transactional
-  public void completeUpload(UUID id) {
+  public void completeUpload(UUID id) throws Exception {
     Video v =
         repo.findById(id).orElseThrow(() -> new IllegalArgumentException("Video not found"));
     if (v.getStatus() != VideoStatus.CREATED) {
       throw new IllegalStateException("Invalid status for complete: " + v.getStatus());
     }
-    if (!storage.objectExists(v.getOriginalObjectKey())) {
-      throw new IllegalStateException("Original object not found in storage");
-    }
+    storage.ensureObjectPresent(v.getOriginalObjectKey());
     v.setStatus(VideoStatus.UPLOADED);
     v.setUpdatedAt(Instant.now());
   }
@@ -112,6 +110,7 @@ public class VideoService {
             .map(
                 v -> {
                   v.setStatus(VideoStatus.PROCESSING);
+                  v.setProcessingProgress(5);
                   v.setProcessingLeaseUntil(leaseUntil);
                   v.setUpdatedAt(Instant.now());
                   return repo.save(v);
@@ -152,6 +151,22 @@ public class VideoService {
    * encoding. Only valid in {@link VideoStatus#PROCESSING}; {@link #markAsReady} sets the same
    * prefix again at completion.
    */
+  /**
+   * Actualiza el avance de transcodificación (0–100). Solo tiene efecto en {@link
+   * VideoStatus#PROCESSING}.
+   */
+  @Transactional
+  public void setTranscodeProgress(UUID id, int percent) {
+    Video v = repo.findById(id).orElseThrow(() -> new IllegalArgumentException("Video not found"));
+    if (v.getStatus() != VideoStatus.PROCESSING) {
+      return;
+    }
+    int p = Math.clamp(percent, 0, 100);
+    v.setProcessingProgress(p);
+    v.setUpdatedAt(Instant.now());
+    repo.save(v);
+  }
+
   @Transactional
   public void setTranscodeOutputPrefix(UUID id, String outputPrefix) {
     Video v = repo.findById(id).orElseThrow(() -> new IllegalArgumentException("Video not found"));
@@ -179,6 +194,7 @@ public class VideoService {
     v.setManifestObjectKey(manifestObjectKey);
     v.setStatus(VideoStatus.READY);
     v.setProcessingLeaseUntil(null);
+    v.setProcessingProgress(null);
     v.setUpdatedAt(Instant.now());
   }
 
@@ -189,6 +205,7 @@ public class VideoService {
         repo.findById(id).orElseThrow(() -> new IllegalArgumentException("Video not found"));
     v.setStatus(VideoStatus.FAILED);
     v.setProcessingLeaseUntil(null);
+    v.setProcessingProgress(null);
     String msg = errorMessage == null ? "Unknown error" : errorMessage;
     v.setErrorMessage(msg.length() > 4000 ? msg.substring(0, 4000) : msg);
     v.setUpdatedAt(Instant.now());

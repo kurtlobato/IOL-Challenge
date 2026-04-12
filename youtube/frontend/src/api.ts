@@ -9,6 +9,8 @@ export type VideoItem = {
   errorMessage: string | null;
   uploaderId: string | null;
   createdAt: string;
+  /** 0–100 en cola/proceso; null en CREATED/READY/FAILED */
+  progressPercent: number | null;
 };
 
 export type CreateVideoBody = {
@@ -62,21 +64,32 @@ export async function listVideos(): Promise<VideoItem[]> {
   return parseJson<VideoItem[]>(res);
 }
 
-export async function uploadToPresigned(
+export function uploadToPresigned(
   uploadUrl: string,
   file: File,
   method: string,
+  onProgress?: (percent: number) => void,
 ): Promise<void> {
-  const res = await fetch(uploadUrl, {
-    method: method || "PUT",
-    body: file,
-    headers: {
-      "Content-Type": file.type || "application/octet-stream",
-    },
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method || "PUT", uploadUrl);
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.upload.onprogress = (ev) => {
+      if (ev.lengthComputable && onProgress) {
+        onProgress(Math.round((100 * ev.loaded) / ev.total));
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        if (onProgress) onProgress(100);
+        resolve();
+      } else {
+        reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Error de red al subir"));
+    xhr.send(file);
   });
-  if (!res.ok) {
-    throw new Error(`Upload failed: ${res.status} ${res.statusText}`);
-  }
 }
 
 export async function deleteVideo(id: string, uploaderId: string): Promise<void> {

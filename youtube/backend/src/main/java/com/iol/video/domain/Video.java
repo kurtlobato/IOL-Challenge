@@ -60,6 +60,10 @@ public class Video {
   @Column(name = "processing_lease_until")
   private Instant processingLeaseUntil;
 
+  /** 0–100 durante transcodificación; null en otros estados. */
+  @Column(name = "processing_progress")
+  private Integer processingProgress;
+
   protected Video() {}
 
   public Video(
@@ -159,6 +163,14 @@ public class Video {
 
   public void setProcessingLeaseUntil(Instant processingLeaseUntil) {
     this.processingLeaseUntil = processingLeaseUntil;
+  }
+
+  public Integer getProcessingProgress() {
+    return processingProgress;
+  }
+
+  public void setProcessingProgress(Integer processingProgress) {
+    this.processingProgress = processingProgress;
   }
 
   public String getUploaderId() {

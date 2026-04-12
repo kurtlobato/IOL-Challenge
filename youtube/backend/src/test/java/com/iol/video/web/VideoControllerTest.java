@@ -63,7 +63,8 @@ class VideoControllerTest {
                     null,
                     null,
                     "user1",
-                    Instant.parse("2025-01-01T00:00:00Z"))));
+                    Instant.parse("2025-01-01T00:00:00Z"),
+                    null)));
     mockMvc
         .perform(get("/api/videos"))
         .andExpect(status().isOk())
