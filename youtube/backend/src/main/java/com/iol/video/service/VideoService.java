@@ -13,6 +13,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,6 +22,8 @@ import org.springframework.transaction.annotation.Transactional;
 /** Casos de uso de video: alta con presign, completado, listado y transición a procesamiento/ready. */
 @Service
 public class VideoService {
+
+  private static final Logger log = LoggerFactory.getLogger(VideoService.class);
 
   private final VideoRepository repo;
   private final ObjectStorageService storage;
@@ -201,8 +205,12 @@ public class VideoService {
   /** Persiste fallo de transcodificación, truncando el mensaje a 4000 caracteres. */
   @Transactional
   public void markFailed(UUID id, String errorMessage) {
-    Video v =
-        repo.findById(id).orElseThrow(() -> new IllegalArgumentException("Video not found"));
+    Optional<Video> existing = repo.findById(id);
+    if (existing.isEmpty()) {
+      log.warn("markFailed omitido: video {} ya no existe (p. ej. borrado durante transcodificación)", id);
+      return;
+    }
+    Video v = existing.get();
     v.setStatus(VideoStatus.FAILED);
     v.setProcessingLeaseUntil(null);
     v.setProcessingProgress(null);

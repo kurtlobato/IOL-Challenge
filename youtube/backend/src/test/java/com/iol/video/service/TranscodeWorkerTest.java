@@ -119,4 +119,30 @@ class TranscodeWorkerTest {
     verify(transcodeService, times(1)).runPipeline(id);
     verify(videoService).markFailed(eq(id), any());
   }
+
+  @Test
+  void poll_onVideoNotFound_stopsWithoutExtraRetries() throws Exception {
+    UUID id = UUID.randomUUID();
+    Video v =
+        new Video(
+            id,
+            "t",
+            "a.mp4",
+            "video/mp4",
+            10L,
+            VideoStatus.PROCESSING,
+            "originals/" + id + "/source",
+            "user1",
+            Instant.now(),
+            Instant.now());
+    when(videoService.claimNextForTranscode()).thenReturn(Optional.of(v));
+    doThrow(new IllegalArgumentException("Video not found"))
+        .when(transcodeService)
+        .runPipeline(id);
+
+    worker.poll();
+
+    verify(transcodeService, times(1)).runPipeline(id);
+    verify(videoService).markFailed(id, "Video not found");
+  }
 }

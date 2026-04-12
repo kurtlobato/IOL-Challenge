@@ -77,6 +77,10 @@ public class TranscodeWorker {
       } catch (Exception e) {
         last = e;
         log.warn("Transcode attempt {} failed for {}: {}", attempt, id, e.getMessage());
+        if (e instanceof IllegalArgumentException iae && "Video not found".equals(iae.getMessage())) {
+          videoService.markFailed(id, iae.getMessage());
+          return;
+        }
         if (attempt < max) {
           try {
             Thread.sleep(1000L * attempt);

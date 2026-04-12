@@ -300,4 +300,33 @@ class VideoServiceTest {
         IllegalStateException.class,
         () -> videoService.setTranscodeOutputPrefix(id, "transcoded/" + id + "/"));
   }
+
+  @Test
+  void markFailed_noOpWhenVideoMissing() {
+    UUID id = UUID.randomUUID();
+    when(repo.findById(id)).thenReturn(Optional.empty());
+    videoService.markFailed(id, "x");
+    verify(repo).findById(id);
+  }
+
+  @Test
+  void markFailed_setsFailedWhenPresent() {
+    UUID id = UUID.randomUUID();
+    Video v =
+        new Video(
+            id,
+            "t",
+            "a.mp4",
+            "video/mp4",
+            10L,
+            VideoStatus.PROCESSING,
+            "originals/" + id + "/source",
+            "user1",
+            Instant.now(),
+            Instant.now());
+    when(repo.findById(id)).thenReturn(Optional.of(v));
+    videoService.markFailed(id, "ffmpeg died");
+    assertEquals(VideoStatus.FAILED, v.getStatus());
+    assertEquals("ffmpeg died", v.getErrorMessage());
+  }
 }
