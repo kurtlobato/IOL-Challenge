@@ -1,19 +1,19 @@
 # Java
-backend/target/
+youtube/backend/target/
 # Fragmentos HLS si FFmpeg escribió por error en el cwd del backend
-backend/seg*.ts
-backend/segments/
-backend/index.m3u8
+youtube/backend/seg*.ts
+youtube/backend/segments/
+youtube/backend/index.m3u8
 
-backend/.idea/
+youtube/backend/.idea/
 *.class
 *.jar
 *.war
 *.iml
 
 # Node
-frontend/node_modules/
-frontend/dist/
+youtube/frontend/node_modules/
+youtube/frontend/dist/
 *.local
 
 # OS

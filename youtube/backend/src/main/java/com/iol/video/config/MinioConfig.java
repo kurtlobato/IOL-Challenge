@@ -4,6 +4,8 @@ import io.minio.BucketExistsArgs;
 import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
 import io.minio.SetBucketPolicyArgs;
+import java.util.concurrent.TimeUnit;
+import okhttp3.OkHttpClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -20,10 +22,18 @@ public class MinioConfig {
 
   @Bean
   public MinioClient minioClient(MinioProperties p) {
+    MinioProperties.Http h = p.http();
+    OkHttpClient http =
+        new OkHttpClient.Builder()
+            .connectTimeout(h.connectTimeoutMillis(), TimeUnit.MILLISECONDS)
+            .readTimeout(h.readTimeoutMillis(), TimeUnit.MILLISECONDS)
+            .writeTimeout(h.writeTimeoutMillis(), TimeUnit.MILLISECONDS)
+            .build();
     return MinioClient.builder()
         .endpoint(p.endpoint())
         .credentials(p.accessKey(), p.secretKey())
         .region(p.region())
+        .httpClient(http)
         .build();
   }
 

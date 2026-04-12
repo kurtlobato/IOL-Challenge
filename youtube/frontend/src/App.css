@@ -30,6 +30,11 @@ body {
   cursor: pointer;
 }
 
+.navbar-logo {
+  display: block;
+  flex-shrink: 0;
+}
+
 .btn-create {
   display: flex;
   align-items: center;
@@ -355,8 +360,11 @@ body {
   display: flex;
   justify-content: center;
   align-items: center;
-  font-size: 4rem;
-  color: #aaaaaa;
+}
+
+.upload-icon-circle img {
+  display: block;
+  opacity: 0.85;
 }
 
 .upload-text {

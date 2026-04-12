@@ -56,7 +56,7 @@ class TranscodeWorkerTest {
             1000L,
             900,
             "http://localhost/storage",
-            new AppProperties.Transcode(3, 4000L, 120, 45, 45),
+            new AppProperties.Transcode(3, 4000L, 120, 45, 45, 7200, 180),
             new AppProperties.Ffmpeg("ffmpeg"),
             List.of(new AppProperties.HlsVariant("480p", 480, 1_000_000)));
     worker = new TranscodeWorker(videoService, transcodeService, env, NOOP_LOCK, app);

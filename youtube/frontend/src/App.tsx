@@ -116,7 +116,7 @@ export default function App() {
     <>
       <nav className="navbar">
         <div className="navbar-brand" onClick={() => setSelected(null)}>
-          <span style={{color: 'white', background: 'red', borderRadius: '4px', padding: '2px 6px', fontSize: '1rem'}}>▶</span>
+          <img className="navbar-logo" src="/favicon-32.png" alt="" width={28} height={28} />
           IOL Video
         </div>
         <button className="btn-create" onClick={openModal}>
@@ -295,7 +295,9 @@ export default function App() {
             </div>
             
             <div className="modal-body">
-               <div className="upload-icon-circle">⇧</div>
+               <div className="upload-icon-circle">
+                 <img src="/icon-video-48.png" alt="" width={56} height={56} />
+               </div>
                <div className="upload-text">
                   <h3 style={{margin: "0 0 8px 0"}}>Arrastra y suelta archivos de video para subirlos</h3>
                   <p>Tus videos se procesarán tras subirlos.</p>

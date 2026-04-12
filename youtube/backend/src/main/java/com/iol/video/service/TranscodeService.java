@@ -16,6 +16,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -140,18 +141,28 @@ public class TranscodeService {
     try {
       List<String> cmd = new ArrayList<>();
       cmd.add(app.ffmpeg().command());
-      cmd.addAll(List.of(
-          "-y",
-          "-i", input.toAbsolutePath().toString(),
-          "-ss", "00:00:01.000",
-          "-vframes", "1",
-          "-q:v", "2",
-          output.toAbsolutePath().toString()
-      ));
+      cmd.addAll(
+          List.of(
+              "-y",
+              "-i",
+              input.toAbsolutePath().toString(),
+              "-ss",
+              "00:00:01.000",
+              "-vframes",
+              "1",
+              "-q:v",
+              "2",
+              output.toAbsolutePath().toString()));
       ProcessBuilder pb = new ProcessBuilder(cmd);
       pb.redirectErrorStream(true);
       Process proc = pb.start();
-      proc.waitFor();
+      long sec = app.transcode().ffmpegThumbnailTimeoutSeconds();
+      if (!proc.waitFor(sec, TimeUnit.SECONDS)) {
+        destroyFfmpegProcess(proc);
+        log.warn("Thumbnail ffmpeg exceeded {}s timeout", sec);
+      } else {
+        drainFfmpegLog(proc);
+      }
     } catch (Exception e) {
       log.warn("Failed to generate thumbnail: {}", e.getMessage());
     }
@@ -198,8 +209,13 @@ public class TranscodeService {
     pb.directory(variantDir.toFile());
     pb.redirectErrorStream(true);
     Process proc = pb.start();
-    String ffmpegLog = new String(proc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-    int code = proc.waitFor();
+    long sec = app.transcode().ffmpegTimeoutSeconds();
+    if (!proc.waitFor(sec, TimeUnit.SECONDS)) {
+      destroyFfmpegProcess(proc);
+      throw new TimeoutException("ffmpeg exceeded " + sec + "s (" + v.name() + ")");
+    }
+    String ffmpegLog = drainFfmpegLog(proc);
+    int code = proc.exitValue();
     if (code != 0) {
       throw new IllegalStateException(
           "ffmpeg exit "
@@ -208,6 +224,23 @@ public class TranscodeService {
               + v.name()
               + "): "
               + truncate(ffmpegLog, 4000));
+    }
+  }
+
+  private static String drainFfmpegLog(Process proc) throws java.io.IOException {
+    return new String(proc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+  }
+
+  private static void destroyFfmpegProcess(Process proc) {
+    proc.destroy();
+    try {
+      if (!proc.waitFor(5, TimeUnit.SECONDS)) {
+        proc.destroyForcibly();
+        proc.waitFor(3, TimeUnit.SECONDS);
+      }
+    } catch (InterruptedException ie) {
+      Thread.currentThread().interrupt();
+      proc.destroyForcibly();
     }
   }
 

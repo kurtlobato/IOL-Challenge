@@ -1,6 +1,9 @@
 package com.iol.video.web;
 
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -20,6 +23,34 @@ public class RestExceptionHandler {
   public ResponseEntity<Map<String, String>> conflict(IllegalStateException e) {
     return ResponseEntity.status(HttpStatus.CONFLICT)
         .body(Map.of("error", e.getMessage() != null ? e.getMessage() : "Conflict"));
+  }
+
+  @ExceptionHandler(CallNotPermittedException.class)
+  public ResponseEntity<Map<String, String>> circuitOpen(CallNotPermittedException e) {
+    return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+        .body(Map.of("error", "Storage temporarily unavailable"));
+  }
+
+  @ExceptionHandler(TimeoutException.class)
+  public ResponseEntity<Map<String, String>> timeout(TimeoutException e) {
+    return ResponseEntity.status(HttpStatus.GATEWAY_TIMEOUT)
+        .body(Map.of("error", "Storage request timed out"));
+  }
+
+  @ExceptionHandler(ExecutionException.class)
+  public ResponseEntity<Map<String, String>> execution(ExecutionException e) {
+    Throwable c = e.getCause();
+    if (c instanceof TimeoutException te) {
+      return timeout(te);
+    }
+    if (c instanceof CallNotPermittedException cn) {
+      return circuitOpen(cn);
+    }
+    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+        .body(
+            Map.of(
+                "error",
+                c != null && c.getMessage() != null ? c.getMessage() : "Internal error"));
   }
 
   @ExceptionHandler(MethodArgumentNotValidException.class)

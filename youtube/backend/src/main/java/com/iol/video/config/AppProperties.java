@@ -26,7 +26,9 @@ public record AppProperties(
       long pollMs,
       int leaseTtlSeconds,
       int leaseRenewSeconds,
-      int claimLockAtMostSeconds) {
+      int claimLockAtMostSeconds,
+      int ffmpegTimeoutSeconds,
+      int ffmpegThumbnailTimeoutSeconds) {
     public Transcode {
       if (leaseTtlSeconds <= 0) {
         leaseTtlSeconds = 120;
@@ -39,6 +41,12 @@ public record AppProperties(
       }
       if (claimLockAtMostSeconds <= 0) {
         claimLockAtMostSeconds = 45;
+      }
+      if (ffmpegTimeoutSeconds <= 0) {
+        ffmpegTimeoutSeconds = 7200;
+      }
+      if (ffmpegThumbnailTimeoutSeconds <= 0) {
+        ffmpegThumbnailTimeoutSeconds = 180;
       }
     }
   }

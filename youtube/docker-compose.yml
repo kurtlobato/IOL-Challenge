@@ -27,6 +27,37 @@ services:
     volumes:
       - miniodata:/data
 
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/videodb
+      SPRING_DATASOURCE_USERNAME: iol
+      SPRING_DATASOURCE_PASSWORD: iol
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: videos
+      MINIO_REGION: us-east-1
+      APP_PLAYBACK_BASE_URL: http://localhost:8088/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "8088:80"
+    depends_on:
+      - api
+
 volumes:
   pgdata:
   miniodata:
