@@ -320,9 +320,12 @@ export function VideoPlayer({
     if (!el) return false;
     const doc = document as Document & {
       webkitFullscreenElement?: Element | null;
+      mozFullScreenElement?: Element | null;
     };
     return (
-      document.fullscreenElement === el || doc.webkitFullscreenElement === el
+      document.fullscreenElement === el ||
+      doc.webkitFullscreenElement === el ||
+      doc.mozFullScreenElement === el
     );
   }, []);
 
@@ -330,10 +333,12 @@ export function VideoPlayer({
     const sync = () => setShellInFullscreen(shellIsActiveFullscreen());
     document.addEventListener("fullscreenchange", sync);
     document.addEventListener("webkitfullscreenchange", sync);
+    document.addEventListener("mozfullscreenchange", sync);
     sync();
     return () => {
       document.removeEventListener("fullscreenchange", sync);
       document.removeEventListener("webkitfullscreenchange", sync);
+      document.removeEventListener("mozfullscreenchange", sync);
     };
   }, [shellIsActiveFullscreen, manifestUrl]);
 

@@ -9,4 +9,6 @@ public record CreateVideoRequest(
     @NotBlank @Size(max = 512) String originalFilename,
     @Size(max = 256) String contentType,
     @Positive Long sizeBytes,
-    @Size(max = 128) String uploaderId) {}
+    @Size(max = 128) String uploaderId,
+    /** Opcional: mismo valor + mismo uploaderId reutiliza el registro CREATED y devuelve un presign nuevo. */
+    @Size(max = 128) String uploadIdempotencyKey) {}

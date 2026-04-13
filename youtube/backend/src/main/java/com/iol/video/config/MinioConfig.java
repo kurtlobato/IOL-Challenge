@@ -10,9 +10,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.ApplicationListener;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 
 /** Cliente MinIO con timeouts HTTP y arranque del bucket/política de lectura pública en {@code transcoded/*}. */
 @Configuration
@@ -21,8 +23,30 @@ public class MinioConfig {
 
   private static final Logger log = LoggerFactory.getLogger(MinioConfig.class);
 
-  @Bean
-  public MinioClient minioClient(MinioProperties p) {
+  @Bean(name = "minioOperationalClient")
+  @Primary
+  public MinioClient minioOperationalClient(MinioProperties p) {
+    return buildMinioClient(p.endpoint(), p);
+  }
+
+  /**
+   * Cliente usado solo para generar URLs presignadas. Si {@code minio.public-endpoint} coincide con
+   * {@code minio.endpoint} o no está definido, reutiliza el cliente operacional.
+   */
+  @Bean(name = "minioPresignClient")
+  public MinioClient minioPresignClient(
+      MinioProperties p, @Qualifier("minioOperationalClient") MinioClient operational) {
+    String pub = p.publicEndpoint();
+    if (pub == null) {
+      return operational;
+    }
+    if (pub.equals(p.endpoint())) {
+      return operational;
+    }
+    return buildMinioClient(pub, p);
+  }
+
+  private static MinioClient buildMinioClient(String endpoint, MinioProperties p) {
     MinioProperties.Http h = p.http();
     OkHttpClient http =
         new OkHttpClient.Builder()
@@ -31,7 +55,7 @@ public class MinioConfig {
             .writeTimeout(h.writeTimeoutMillis(), TimeUnit.MILLISECONDS)
             .build();
     return MinioClient.builder()
-        .endpoint(p.endpoint())
+        .endpoint(endpoint)
         .credentials(p.accessKey(), p.secretKey())
         .region(p.region())
         .httpClient(http)

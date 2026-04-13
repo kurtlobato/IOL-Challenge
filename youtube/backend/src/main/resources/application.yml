@@ -58,6 +58,8 @@ logging:
 
 minio:
   endpoint: http://127.0.0.1:9000
+  # Opcional: URL para presign en el navegador si endpoint es solo red interna (p. ej. Docker).
+  # public-endpoint: http://127.0.0.1:9000
   access-key: minioadmin
   secret-key: minioadmin
   bucket: videos

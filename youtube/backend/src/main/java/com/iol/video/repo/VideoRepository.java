@@ -34,6 +34,11 @@ public interface VideoRepository extends JpaRepository<Video, UUID> {
   /** Vídeos en CREATED creados estrictamente antes del instante dado (p. ej. limpieza por abandono). */
   List<Video> findByStatusAndCreatedAtBefore(VideoStatus status, Instant createdAtBefore);
 
+  Optional<Video> findByUploaderIdAndUploadIdempotencyKey(String uploaderId, String uploadIdempotencyKey);
+
+  /** Listado público: solo listos para reproducir, más recientes primero. */
+  List<Video> findByStatusOrderByCreatedAtDesc(VideoStatus status);
+
   /**
    * Inserta par (video, viewer) si no existía y, solo en ese caso, incrementa {@code view_count}.
    * Limpia el contexto de persistencia para que un {@code findById} posterior vea el contador

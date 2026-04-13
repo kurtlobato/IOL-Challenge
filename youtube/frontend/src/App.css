@@ -92,6 +92,10 @@ body {
   cursor: default;
 }
 
+.video-card-pending .card-more-wrap {
+  opacity: 1;
+}
+
 .video-card-pending:hover .thumbnail {
   border-radius: 12px;
 }
@@ -148,52 +152,67 @@ body {
   height: 100%;
   object-fit: cover;
   pointer-events: none;
-  z-index: 0;
+  z-index: 1;
 }
 
 .thumb-preview-progress {
   position: relative;
   z-index: 2;
-  padding: 0 6px 5px;
+  padding: 0 6px 4px;
   pointer-events: auto;
 }
 
+/* Área clicable alta; la tira visual va centrada en vertical. */
 .thumb-preview-rail {
   position: relative;
-  height: 3px;
+  min-height: 28px;
   cursor: pointer;
-  border-radius: 2px;
-  transition: height 0.12s ease;
-}
-
-.thumb-preview-rail:hover {
-  height: 5px;
+  display: flex;
+  align-items: center;
 }
 
 .thumb-preview-rail-track {
   position: absolute;
-  inset: 0;
-  border-radius: 2px;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 3px;
   background: rgba(255, 255, 255, 0.28);
+  pointer-events: none;
+  transition: height 0.12s ease, margin-top 0.12s ease;
+}
+
+.thumb-preview-rail:hover .thumb-preview-rail-track {
+  height: 8px;
+  margin-top: -4px;
 }
 
 .thumb-preview-rail-played {
   position: absolute;
   left: 0;
-  top: 0;
-  bottom: 0;
-  border-radius: 2px;
+  top: 50%;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 3px;
   background: #3ea6ff;
   pointer-events: none;
+  transition: height 0.12s ease, margin-top 0.12s ease;
+}
+
+.thumb-preview-rail:hover .thumb-preview-rail-played {
+  height: 8px;
+  margin-top: -4px;
 }
 
 .thumb-preview-rail-handle {
   position: absolute;
   top: 50%;
-  width: 10px;
-  height: 10px;
-  margin-left: -5px;
-  margin-top: -5px;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  margin-top: -6px;
   border-radius: 50%;
   background: #fff;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
@@ -206,9 +225,76 @@ body {
   opacity: 1;
 }
 
-.thumb-preview-tooltip {
+.thumb-preview-tooltip-stack {
   position: absolute;
   bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.thumb-preview-frame-wrap {
+  position: relative;
+  width: 160px;
+  height: 90px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0f0f0f;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55);
+}
+
+.thumb-preview-loader {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 15, 15, 0.92);
+}
+
+.thumb-preview-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #3ea6ff;
+  border-radius: 50%;
+  animation: thumb-preview-spin 0.65s linear infinite;
+}
+
+@keyframes thumb-preview-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.thumb-preview-poster {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 0;
+}
+
+.thumb-preview-frame-video {
+  position: relative;
+  display: block;
+  width: 160px;
+  height: 90px;
+  object-fit: cover;
+  z-index: 1;
+  background: transparent;
+}
+
+.thumb-preview-frame-video--hidden {
+  opacity: 0;
+}
+
+.thumb-preview-tooltip-label {
   padding: 3px 6px;
   border-radius: 4px;
   font-size: 12px;
@@ -216,9 +302,7 @@ body {
   line-height: 1.2;
   color: #f1f1f1;
   background: rgba(15, 15, 15, 0.92);
-  transform: translateX(-50%);
   white-space: nowrap;
-  pointer-events: none;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
 }
 
@@ -618,22 +702,23 @@ body {
 }
 
 /*
- * Pantalla completa: barra fija abajo (overlay). La clase --fullscreen la pone JS
- * (fullscreenchange / webkitfullscreenchange) por si :fullscreen no aplica igual en todos.
+ * Pantalla completa: columna flex (vídeo + barra) para que los controles no queden fuera de vista
+ * ni tapados; la clase --fullscreen la pone JS por si :fullscreen falla en algún motor.
  */
 .detail-player-shell:fullscreen,
 .detail-player-shell:-webkit-full-screen,
 .detail-player-shell:-moz-full-screen,
 .detail-player-shell.detail-player-shell--fullscreen {
-  position: relative;
-  display: block;
+  display: flex;
+  flex-direction: column;
   box-sizing: border-box;
   width: 100%;
+  max-width: 100%;
   height: 100%;
   min-height: 100vh;
   min-height: 100dvh;
-  max-height: 100%;
-  overflow: visible;
+  max-height: 100dvh;
+  overflow: hidden;
   border-radius: 0;
   background: #000;
 }
@@ -642,36 +727,38 @@ body {
 .video-wrapper .detail-player-shell:-webkit-full-screen .detail-player-video,
 .video-wrapper .detail-player-shell:-moz-full-screen .detail-player-video,
 .video-wrapper .detail-player-shell.detail-player-shell--fullscreen .detail-player-video {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  display: block;
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
   width: 100%;
-  height: 100%;
+  max-width: 100%;
+  height: auto;
   margin: 0;
-  aspect-ratio: auto;
+  aspect-ratio: unset;
   max-height: none;
   object-fit: contain;
   cursor: pointer;
+  z-index: 1;
 }
 
 .detail-player-shell:fullscreen .detail-player-chrome,
 .detail-player-shell:-webkit-full-screen .detail-player-chrome,
 .detail-player-shell:-moz-full-screen .detail-player-chrome,
 .detail-player-shell.detail-player-shell--fullscreen .detail-player-chrome {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 4;
+  position: relative;
+  flex: 0 0 auto;
+  z-index: 10;
+  width: 100%;
+  box-sizing: border-box;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  padding: 14px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+  padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px));
   padding-left: calc(14px + env(safe-area-inset-left, 0px));
   padding-right: calc(14px + env(safe-area-inset-right, 0px));
-  background: linear-gradient(transparent, rgba(0, 0, 0, 0.92));
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.95), rgba(0, 0, 0, 0.88));
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
   pointer-events: auto;
 }
 
@@ -921,6 +1008,12 @@ body {
   font-size: 0.95rem;
   line-height: 1.45;
   max-width: 480px;
+}
+
+.modal-confirm-sub {
+  margin-top: 0;
+  color: #aaa;
+  font-size: 0.88rem;
 }
 
 .err {

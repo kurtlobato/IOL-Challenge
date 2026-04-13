@@ -10,12 +10,12 @@ import com.iol.video.web.dto.CreateVideoResponse;
 import com.iol.video.web.dto.PresignedDownloadResponse;
 import com.iol.video.web.dto.VideoDto;
 import java.time.Instant;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,11 +29,17 @@ public class VideoService {
   private final VideoRepository repo;
   private final ObjectStorageService storage;
   private final AppProperties app;
+  private final CreatedVideoCleanup createdCleanup;
 
-  public VideoService(VideoRepository repo, ObjectStorageService storage, AppProperties app) {
+  public VideoService(
+      VideoRepository repo,
+      ObjectStorageService storage,
+      AppProperties app,
+      CreatedVideoCleanup createdCleanup) {
     this.repo = repo;
     this.storage = storage;
     this.app = app;
+    this.createdCleanup = createdCleanup;
   }
 
   @Transactional
@@ -41,6 +47,17 @@ public class VideoService {
     if (req.sizeBytes() != null && req.sizeBytes() > app.maxUploadBytes()) {
       throw new IllegalArgumentException("Video exceeds maximum allowed size");
     }
+    String idemKey = normalizeUploadIdempotencyKey(req.uploadIdempotencyKey());
+    if (idemKey != null) {
+      if (req.uploaderId() == null || req.uploaderId().isBlank()) {
+        throw new IllegalArgumentException("uploaderId required when uploadIdempotencyKey is set");
+      }
+      Optional<Video> existing = repo.findByUploaderIdAndUploadIdempotencyKey(req.uploaderId(), idemKey);
+      if (existing.isPresent()) {
+        return responseForExistingIdempotentCreate(existing.get(), req);
+      }
+    }
+
     UUID id = UUID.randomUUID();
     String key = "originals/" + id + "/source";
     Instant now = Instant.now();
@@ -56,7 +73,20 @@ public class VideoService {
             req.uploaderId(),
             now,
             now);
-    repo.save(v);
+    v.setUploadIdempotencyKey(idemKey);
+    try {
+      repo.save(v);
+    } catch (DataIntegrityViolationException e) {
+      if (idemKey == null) {
+        throw e;
+      }
+      Optional<Video> raced =
+          repo.findByUploaderIdAndUploadIdempotencyKey(req.uploaderId(), idemKey);
+      if (raced.isPresent()) {
+        return responseForExistingIdempotentCreate(raced.get(), req);
+      }
+      throw e;
+    }
     log.info(
         "Alta video (CREATED, pendiente PUT al bucket): id={} uploaderId={} título=\"{}\" filename={} contentType={} sizeBytes={}",
         id,
@@ -78,10 +108,20 @@ public class VideoService {
   public void completeUpload(UUID id) throws Exception {
     Video v =
         repo.findById(id).orElseThrow(() -> new IllegalArgumentException("Video not found"));
+    if (v.getStatus() == VideoStatus.UPLOADED) {
+      return;
+    }
     if (v.getStatus() != VideoStatus.CREATED) {
       throw new IllegalStateException("Invalid status for complete: " + v.getStatus());
     }
-    storage.ensureObjectPresent(v.getOriginalObjectKey());
+    try {
+      storage.ensureObjectPresent(v.getOriginalObjectKey());
+    } catch (IllegalStateException e) {
+      if ("Original object not found in storage".equals(e.getMessage())) {
+        createdCleanup.deleteIfCreated(id);
+      }
+      throw e;
+    }
     v.setStatus(VideoStatus.UPLOADED);
     v.setUpdatedAt(Instant.now());
     log.info(
@@ -153,11 +193,7 @@ public class VideoService {
 
   @Transactional(readOnly = true)
   public List<VideoDto> list() {
-    return repo.findAll().stream()
-        .sorted(
-            Comparator.comparingInt(
-                    (Video v) -> v.getStatus() == VideoStatus.READY ? 0 : 1)
-                .thenComparing(Video::getCreatedAt))
+    return repo.findByStatusOrderByCreatedAtDesc(VideoStatus.READY).stream()
         .map(v -> VideoDto.from(v, app.playbackBaseUrl(), storage))
         .toList();
   }
@@ -397,5 +433,43 @@ public class VideoService {
     }
     String t = s.replace('\n', ' ').trim();
     return t.length() <= max ? t : t.substring(0, max) + "…";
+  }
+
+  private static String normalizeUploadIdempotencyKey(String raw) {
+    if (raw == null) {
+      return null;
+    }
+    String t = raw.trim();
+    return t.isEmpty() ? null : t;
+  }
+
+  private CreateVideoResponse responseForExistingIdempotentCreate(Video ex, CreateVideoRequest req)
+      throws Exception {
+    if (ex.getStatus() == VideoStatus.CREATED) {
+      applyCreateMetadata(ex, req);
+      ex.setUpdatedAt(Instant.now());
+      repo.save(ex);
+      log.info(
+          "Alta idempotente (mismo CREATED): id={} uploadIdempotencyKey={} uploaderId={}",
+          ex.getId(),
+          abbrev(ex.getUploadIdempotencyKey(), 64),
+          ex.getUploaderId());
+      String uploadUrl = storage.presignedPut(ex.getOriginalObjectKey(), app.presignTtlSeconds());
+      return new CreateVideoResponse(
+          ex.getId(),
+          uploadUrl,
+          "PUT",
+          ex.getOriginalObjectKey(),
+          app.presignTtlSeconds());
+    }
+    throw new IllegalStateException(
+        "Upload already registered for this idempotency key (status: " + ex.getStatus() + ")");
+  }
+
+  private static void applyCreateMetadata(Video v, CreateVideoRequest req) {
+    v.setTitle(req.title());
+    v.setOriginalFilename(req.originalFilename());
+    v.setContentType(req.contentType());
+    v.setSizeBytes(req.sizeBytes());
   }
 }

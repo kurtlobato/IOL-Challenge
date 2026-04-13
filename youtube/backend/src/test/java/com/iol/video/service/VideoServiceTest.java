@@ -35,6 +35,7 @@ class VideoServiceTest {
 
   @Mock private VideoRepository repo;
   @Mock private ObjectStorageService storage;
+  @Mock private CreatedVideoCleanup createdCleanup;
 
   private AppProperties app;
   private VideoService videoService;
@@ -50,32 +51,18 @@ class VideoServiceTest {
             new AppProperties.Ffmpeg("ffmpeg"),
             List.of(new AppProperties.HlsVariant("480p", 480, 1_000_000)),
             null);
-    videoService = new VideoService(repo, storage, app);
+    videoService = new VideoService(repo, storage, app, createdCleanup);
     lenient()
         .when(storage.publicUrlForKey(any(), any()))
         .thenAnswer(inv -> inv.getArgument(0));
   }
 
   @Test
-  void list_ordersReadyFirstThenByCreatedAtAscending() {
+  void list_returnsOnlyReadyNewestFirst() {
     Instant t0 = Instant.parse("2020-01-01T00:00:00Z");
     Instant t1 = Instant.parse("2020-01-02T00:00:00Z");
-    Instant t2 = Instant.parse("2020-01-03T00:00:00Z");
-    UUID idProcessing = UUID.fromString("00000000-0000-0000-0000-000000000001");
     UUID idReadyOld = UUID.fromString("00000000-0000-0000-0000-000000000002");
     UUID idReadyNew = UUID.fromString("00000000-0000-0000-0000-000000000003");
-    Video processing =
-        new Video(
-            idProcessing,
-            "p",
-            "a.mp4",
-            "video/mp4",
-            1L,
-            VideoStatus.PROCESSING,
-            "originals/" + idProcessing + "/source",
-            "u1",
-            t2,
-            t2);
     Video readyOld =
         new Video(
             idReadyOld,
@@ -102,16 +89,17 @@ class VideoServiceTest {
             t1,
             t1);
     readyNew.setManifestObjectKey("k2/master.m3u8");
-    when(repo.findAll()).thenReturn(List.of(processing, readyNew, readyOld));
+    when(repo.findByStatusOrderByCreatedAtDesc(VideoStatus.READY))
+        .thenReturn(List.of(readyNew, readyOld));
 
     List<UUID> ids = videoService.list().stream().map(d -> d.id()).toList();
-    assertEquals(List.of(idReadyOld, idReadyNew, idProcessing), ids);
+    assertEquals(List.of(idReadyNew, idReadyOld), ids);
   }
 
   @Test
   void create_rejectsWhenOverMaxSize() {
     CreateVideoRequest req =
-        new CreateVideoRequest("t", "a.mp4", "video/mp4", app.maxUploadBytes() + 1, "user1");
+        new CreateVideoRequest("t", "a.mp4", "video/mp4", app.maxUploadBytes() + 1, "user1", null);
     assertThrows(IllegalArgumentException.class, () -> videoService.create(req));
     verify(repo, never()).save(any());
   }
@@ -136,6 +124,7 @@ class VideoServiceTest {
         .when(storage)
         .ensureObjectPresent(v.getOriginalObjectKey());
     assertThrows(IllegalStateException.class, () -> videoService.completeUpload(id));
+    verify(createdCleanup).deleteIfCreated(id);
   }
 
   @Test
@@ -157,6 +146,28 @@ class VideoServiceTest {
     doNothing().when(storage).ensureObjectPresent(v.getOriginalObjectKey());
     videoService.completeUpload(id);
     assertEquals(VideoStatus.UPLOADED, v.getStatus());
+    verify(createdCleanup, never()).deleteIfCreated(any());
+  }
+
+  @Test
+  void completeUpload_noOpWhenAlreadyUploaded() throws Exception {
+    UUID id = UUID.randomUUID();
+    Video v =
+        new Video(
+            id,
+            "t",
+            "a.mp4",
+            "video/mp4",
+            10L,
+            VideoStatus.UPLOADED,
+            "originals/" + id + "/source",
+            "user1",
+            Instant.now(),
+            Instant.now());
+    when(repo.findById(id)).thenReturn(Optional.of(v));
+    videoService.completeUpload(id);
+    verify(storage, never()).ensureObjectPresent(any());
+    verify(createdCleanup, never()).deleteIfCreated(any());
   }
 
   @Test
@@ -177,6 +188,71 @@ class VideoServiceTest {
     when(repo.findById(id)).thenReturn(Optional.of(v));
     assertThrows(IllegalStateException.class, () -> videoService.completeUpload(id));
     verify(storage, never()).ensureObjectPresent(any());
+    verify(createdCleanup, never()).deleteIfCreated(any());
+  }
+
+  @Test
+  void create_idempotencyKeyRequiresUploader() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            videoService.create(
+                new CreateVideoRequest("t", "a.mp4", "video/mp4", 100L, "", "idem")));
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            videoService.create(
+                new CreateVideoRequest("t", "a.mp4", "video/mp4", 100L, null, "idem")));
+  }
+
+  @Test
+  void create_reusesCreatedRowForSameIdempotencyKey() throws Exception {
+    UUID id = UUID.randomUUID();
+    Video v =
+        new Video(
+            id,
+            "old",
+            "old.mp4",
+            "video/mp4",
+            1L,
+            VideoStatus.CREATED,
+            "originals/" + id + "/source",
+            "u1",
+            Instant.now(),
+            Instant.now());
+    v.setUploadIdempotencyKey("idem-1");
+    when(repo.findByUploaderIdAndUploadIdempotencyKey("u1", "idem-1")).thenReturn(Optional.of(v));
+    when(storage.presignedPut(eq(v.getOriginalObjectKey()), anyInt())).thenReturn("http://presign");
+    CreateVideoRequest req =
+        new CreateVideoRequest("new title", "b.mp4", "video/webm", 99L, "u1", "idem-1");
+    var res = videoService.create(req);
+    assertEquals(id, res.id());
+    assertEquals("http://presign", res.uploadUrl());
+    assertEquals("new title", v.getTitle());
+    assertEquals("b.mp4", v.getOriginalFilename());
+    verify(repo).save(v);
+  }
+
+  @Test
+  void create_rejectsIdempotencyKeyWhenAlreadyPastCreated() {
+    UUID id = UUID.randomUUID();
+    Video v =
+        new Video(
+            id,
+            "t",
+            "a.mp4",
+            "video/mp4",
+            10L,
+            VideoStatus.UPLOADED,
+            "originals/" + id + "/source",
+            "u1",
+            Instant.now(),
+            Instant.now());
+    v.setUploadIdempotencyKey("idem-1");
+    when(repo.findByUploaderIdAndUploadIdempotencyKey("u1", "idem-1")).thenReturn(Optional.of(v));
+    CreateVideoRequest req =
+        new CreateVideoRequest("t", "a.mp4", "video/mp4", 100L, "u1", "idem-1");
+    assertThrows(IllegalStateException.class, () -> videoService.create(req));
   }
 
   @Test

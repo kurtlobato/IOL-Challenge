@@ -22,6 +22,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 /**
@@ -35,18 +36,21 @@ public class ObjectStorageService {
   private static final String MINIO = "minio";
 
   private final MinioClient client;
+  private final MinioClient presignClient;
   private final MinioProperties props;
   private final CircuitBreakerRegistry circuitBreakerRegistry;
   private final TimeLimiterRegistry timeLimiterRegistry;
   private final ScheduledExecutorService resilienceScheduler;
 
   public ObjectStorageService(
-      MinioClient client,
+      @Qualifier("minioOperationalClient") MinioClient client,
+      @Qualifier("minioPresignClient") MinioClient presignClient,
       MinioProperties props,
       CircuitBreakerRegistry circuitBreakerRegistry,
       TimeLimiterRegistry timeLimiterRegistry,
       ScheduledExecutorService minioResilienceScheduler) {
     this.client = client;
+    this.presignClient = presignClient;
     this.props = props;
     this.circuitBreakerRegistry = circuitBreakerRegistry;
     this.timeLimiterRegistry = timeLimiterRegistry;
@@ -56,7 +60,7 @@ public class ObjectStorageService {
   public String presignedPut(String objectKey, int ttlSeconds) throws Exception {
     return executeMinio(
         () ->
-            client.getPresignedObjectUrl(
+            presignClient.getPresignedObjectUrl(
                 GetPresignedObjectUrlArgs.builder()
                     .method(Method.PUT)
                     .bucket(props.bucket())
@@ -68,7 +72,7 @@ public class ObjectStorageService {
   public String presignedGet(String objectKey, int ttlSeconds) throws Exception {
     return executeMinio(
         () ->
-            client.getPresignedObjectUrl(
+            presignClient.getPresignedObjectUrl(
                 GetPresignedObjectUrlArgs.builder()
                     .method(Method.GET)
                     .bucket(props.bucket())

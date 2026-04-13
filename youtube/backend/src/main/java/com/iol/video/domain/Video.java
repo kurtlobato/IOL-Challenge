@@ -50,6 +50,10 @@ public class Video {
   @Column(name = "uploader_id", length = 128)
   private String uploaderId;
 
+  /** Clave opcional por subidor para reintentar POST/completar sin duplicar filas. */
+  @Column(name = "upload_idempotency_key", length = 128)
+  private String uploadIdempotencyKey;
+
   @Column(name = "created_at", nullable = false)
   private Instant createdAt;
 
@@ -113,12 +117,24 @@ public class Video {
     return originalFilename;
   }
 
+  public void setOriginalFilename(String originalFilename) {
+    this.originalFilename = originalFilename;
+  }
+
   public String getContentType() {
     return contentType;
   }
 
+  public void setContentType(String contentType) {
+    this.contentType = contentType;
+  }
+
   public Long getSizeBytes() {
     return sizeBytes;
+  }
+
+  public void setSizeBytes(Long sizeBytes) {
+    this.sizeBytes = sizeBytes;
   }
 
   public VideoStatus getStatus() {
@@ -191,6 +207,14 @@ public class Video {
 
   public void setUploaderId(String uploaderId) {
     this.uploaderId = uploaderId;
+  }
+
+  public String getUploadIdempotencyKey() {
+    return uploadIdempotencyKey;
+  }
+
+  public void setUploadIdempotencyKey(String uploadIdempotencyKey) {
+    this.uploadIdempotencyKey = uploadIdempotencyKey;
   }
 
   public Double getDurationSeconds() {

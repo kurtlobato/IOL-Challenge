@@ -21,6 +21,8 @@ export type CreateVideoBody = {
   contentType: string;
   sizeBytes: number;
   uploaderId: string;
+  /** Mismo valor entre reintentos reutiliza el registro CREATED en backend. */
+  uploadIdempotencyKey?: string;
 };
 
 export type CreateVideoResult = {
@@ -85,9 +87,23 @@ export function uploadToPresigned(
   file: File,
   method: string,
   onProgress?: (percent: number) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    const detachAbort = () => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => {
+      xhr.abort();
+    };
+    if (signal) {
+      if (signal.aborted) {
+        reject(new DOMException("Aborted", "AbortError"));
+        return;
+      }
+      signal.addEventListener("abort", onAbort);
+    }
     xhr.open(method || "PUT", uploadUrl);
     xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
     xhr.upload.onprogress = (ev) => {
@@ -96,6 +112,7 @@ export function uploadToPresigned(
       }
     };
     xhr.onload = () => {
+      detachAbort();
       if (xhr.status >= 200 && xhr.status < 300) {
         if (onProgress) onProgress(100);
         resolve();
@@ -103,7 +120,14 @@ export function uploadToPresigned(
         reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
       }
     };
-    xhr.onerror = () => reject(new Error("Error de red al subir"));
+    xhr.onerror = () => {
+      detachAbort();
+      reject(new Error("Error de red al subir"));
+    };
+    xhr.onabort = () => {
+      detachAbort();
+      reject(new DOMException("Aborted", "AbortError"));
+    };
     xhr.send(file);
   });
 }

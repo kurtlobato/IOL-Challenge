@@ -41,6 +41,10 @@ export default function App() {
   const [deleteModalDeleting, setDeleteModalDeleting] = useState(false);
   const [downloadBusyId, setDownloadBusyId] = useState<string | null>(null);
   const hoverPreviewTimeById = useRef<Map<string, number>>(new Map());
+  /** Reintentos de subida (mismo archivo) reutilizan el mismo CREATED en API. */
+  const uploadIdempotencyKeyRef = useRef<string | null>(null);
+  /** Subida en curso (para abortar al borrar el mismo video). */
+  const uploadSessionRef = useRef<{ videoId: string; abort: AbortController } | null>(null);
   const fileInputId = useId();
   const editTitleInputId = useId();
   const location = useLocation();
@@ -75,12 +79,20 @@ export default function App() {
   }, [refresh]);
 
   useEffect(() => {
+    uploadIdempotencyKeyRef.current = null;
+  }, [file]);
+
+  useEffect(() => {
     if (!urlVideoId) {
       setSelected(null);
       return;
     }
     const fromList = items.find((v) => v.id === urlVideoId);
     if (fromList) {
+      if (fromList.status !== "READY") {
+        navigate("/", { replace: true });
+        return;
+      }
       setSelected(fromList);
       return;
     }
@@ -88,6 +100,10 @@ export default function App() {
     void getVideo(urlVideoId)
       .then((v) => {
         if (cancelled) return;
+        if (v.status !== "READY") {
+          navigate("/", { replace: true });
+          return;
+        }
         setSelected(v);
         setItems((prev) => {
           if (prev.some((x) => x.id === v.id)) return prev.map((x) => (x.id === v.id ? v : x));
@@ -135,27 +151,43 @@ export default function App() {
     setLoading(true);
     setUploadPercent(0);
     try {
+      let idem = uploadIdempotencyKeyRef.current;
+      if (!idem) {
+        idem = crypto.randomUUID();
+        uploadIdempotencyKeyRef.current = idem;
+      }
       const created = await createVideo({
         title: title.trim() || "Sin título",
         originalFilename: file.name,
         contentType: file.type || "application/octet-stream",
         sizeBytes: file.size,
         uploaderId: myUploaderId,
+        uploadIdempotencyKey: idem,
       });
+      const ac = new AbortController();
+      uploadSessionRef.current = { videoId: created.id, abort: ac };
       await uploadToPresigned(created.uploadUrl, file, created.method, (p) =>
         setUploadPercent(p),
+        ac.signal,
       );
       await completeVideo(created.id);
+      uploadIdempotencyKeyRef.current = null;
       await refresh();
-      
+
       setIsModalOpen(false); // Close on success
       setTitle("");
       setFile(null);
-      
+
       pollUntilDone(created.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (err instanceof DOMException && err.name === "AbortError") {
+        uploadIdempotencyKeyRef.current = null;
+        await refresh().catch(() => {});
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
+      uploadSessionRef.current = null;
       setLoading(false);
       setUploadPercent(null);
     }
@@ -178,10 +210,7 @@ export default function App() {
     setCardMenuOpenId(null);
     setDownloadBusyId(v.id);
     try {
-      const { url, filename } =
-        v.status === "READY"
-          ? await getOriginalDownloadLink(v.id)
-          : await getOriginalDownloadLink(v.id, myUploaderId);
+      const { url, filename } = await getOriginalDownloadLink(v.id);
       await downloadFromUrl(url, filename);
     } catch (err) {
       alert(err instanceof Error ? err.message : String(err));
@@ -243,6 +272,10 @@ export default function App() {
     setDeleteModalDeleting(true);
     setDeleteModalError(null);
     try {
+      const sess = uploadSessionRef.current;
+      if (sess?.videoId === deleteModalVideo.id) {
+        sess.abort.abort();
+      }
       await deleteVideo(deleteModalVideo.id, myUploaderId);
       if (selected?.id === deleteModalVideo.id) {
         navigate("/", { replace: true });
@@ -344,10 +377,8 @@ export default function App() {
               {items.filter((v) => v.id !== selected.id).map((v) => (
                 <div
                   key={v.id}
-                  className={`related-row ${v.status === "READY" ? "related-row-ready" : "related-row-pending"}`}
-                  onClick={() => {
-                    navigate(`/watch/${v.id}`);
-                  }}
+                  className="related-row related-row-ready"
+                  onClick={() => navigate(`/watch/${v.id}`)}
                 >
                   <div className="related-thumb">
                     {v.thumbnailUrl ? (
@@ -384,10 +415,6 @@ export default function App() {
                     >
                       {v.title}
                     </h4>
-                    <span className={`pill pill-${v.status}`}>
-                      {v.status}
-                      {v.progressPercent != null ? ` ${v.progressPercent}%` : ""}
-                    </span>
                   </div>
                 </div>
               ))}
@@ -397,15 +424,14 @@ export default function App() {
       ) : (
         <main className="dashboard">
           {items.map((v) => {
-            const openable = v.status === "READY";
             const isMine = v.uploaderId === myUploaderId;
             return (
             <div
               key={v.id}
-              className={`video-card ${openable ? "video-card-ready" : "video-card-pending"}`}
+              className="video-card video-card-ready"
               style={{ position: "relative" }}
               onMouseEnter={() => {
-                if (openable && v.manifestUrl) setHoverPreviewId(v.id);
+                if (v.manifestUrl) setHoverPreviewId(v.id);
               }}
               onMouseLeave={() => setHoverPreviewId(null)}
             >
@@ -440,17 +466,17 @@ export default function App() {
                     ▶
                   </span>
                 )}
-                {openable && v.manifestUrl && hoverPreviewId === v.id ? (
+                {v.manifestUrl && hoverPreviewId === v.id ? (
                   <VideoHoverPreview
                     manifestUrl={v.manifestUrl}
+                    posterUrl={v.thumbnailUrl}
                     resumeAt={hoverPreviewTimeById.current.get(v.id) ?? 0}
                     onCommitTime={(t) => {
                       hoverPreviewTimeById.current.set(v.id, t);
                     }}
                   />
                 ) : null}
-                {openable &&
-                v.durationSeconds != null &&
+                {v.durationSeconds != null &&
                 Number.isFinite(v.durationSeconds) &&
                 v.durationSeconds > 0 ? (
                   <span className="thumb-duration">{formatVideoDurationHms(v.durationSeconds)}</span>
@@ -473,8 +499,7 @@ export default function App() {
                     >
                       {v.title}
                     </h3>
-                    {openable ? (
-                      <div className="card-more-wrap">
+                    <div className="card-more-wrap">
                         <button
                           type="button"
                           className="card-more-btn"
@@ -537,7 +562,6 @@ export default function App() {
                           </div>
                         ) : null}
                       </div>
-                    ) : null}
                   </div>
                   <p className="card-meta card-channel-row">
                     <span>IOL Channel</span>
@@ -558,18 +582,8 @@ export default function App() {
                     </span>
                   </p>
                   <p className="card-meta card-views-row">
-                    {openable
-                      ? `${formatViewsLine(v.viewCount ?? 0)} • ${formatRelativeUploadDate(v.createdAt)}`
-                      : formatRelativeUploadDate(v.createdAt)}
+                    {`${formatViewsLine(v.viewCount ?? 0)} • ${formatRelativeUploadDate(v.createdAt)}`}
                   </p>
-                  {!openable ? (
-                    <div>
-                      <span className={`pill pill-${v.status}`}>
-                        {v.status}
-                        {v.progressPercent != null ? ` ${v.progressPercent}%` : ""}
-                      </span>
-                    </div>
-                  ) : null}
                 </div>
               </div>
             </div>
@@ -666,6 +680,11 @@ export default function App() {
                 ¿Eliminar permanentemente{" "}
                 <strong>{deleteModalVideo.title}</strong>? Esta acción no se puede deshacer.
               </p>
+              {deleteModalVideo.status !== "READY" ? (
+                <p className="modal-confirm-text modal-confirm-sub">
+                  Si la subida sigue en curso en este navegador, se cancelará antes de borrar.
+                </p>
+              ) : null}
               {deleteModalError ? <p className="err">{deleteModalError}</p> : null}
               <div className="modal-actions">
                 <button
