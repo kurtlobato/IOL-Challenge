@@ -45,6 +45,7 @@ class ActuatorHealthIntegrationTest {
     r.add("minio.secret-key", () -> "minioadmin");
     r.add("app.transcode.poll-ms", () -> 999_999_999L);
     r.add("spring.task.scheduling.enabled", () -> "false");
+    r.add("app.ffmpeg.hardware-accel", () -> "none");
   }
 
   @Autowired private TestRestTemplate restTemplate;

@@ -58,7 +58,59 @@ class VideoServiceTest {
   }
 
   @Test
-  void list_returnsOnlyReadyNewestFirst() {
+  void list_all_includesEveryStatus_newestFirst() {
+    Instant t0 = Instant.parse("2020-01-01T00:00:00Z");
+    Instant t1 = Instant.parse("2020-01-02T00:00:00Z");
+    Instant t2 = Instant.parse("2020-01-03T00:00:00Z");
+    UUID idProc = UUID.fromString("00000000-0000-0000-0000-000000000001");
+    UUID idReadyOld = UUID.fromString("00000000-0000-0000-0000-000000000002");
+    UUID idReadyNew = UUID.fromString("00000000-0000-0000-0000-000000000003");
+    Video processing =
+        new Video(
+            idProc,
+            "p",
+            "a.mp4",
+            "video/mp4",
+            1L,
+            VideoStatus.PROCESSING,
+            "originals/" + idProc + "/source",
+            "u1",
+            t2,
+            t2);
+    Video readyOld =
+        new Video(
+            idReadyOld,
+            "ro",
+            "b.mp4",
+            "video/mp4",
+            1L,
+            VideoStatus.READY,
+            "originals/" + idReadyOld + "/source",
+            "u1",
+            t0,
+            t0);
+    readyOld.setManifestObjectKey("k/master.m3u8");
+    Video readyNew =
+        new Video(
+            idReadyNew,
+            "rn",
+            "c.mp4",
+            "video/mp4",
+            1L,
+            VideoStatus.READY,
+            "originals/" + idReadyNew + "/source",
+            "u1",
+            t1,
+            t1);
+    readyNew.setManifestObjectKey("k2/master.m3u8");
+    when(repo.findAllByOrderByCreatedAtDesc()).thenReturn(List.of(processing, readyNew, readyOld));
+
+    List<UUID> ids = videoService.list(null).stream().map(d -> d.id()).toList();
+    assertEquals(List.of(idProc, idReadyNew, idReadyOld), ids);
+  }
+
+  @Test
+  void list_readyOnly_onlyReady_newestFirst() {
     Instant t0 = Instant.parse("2020-01-01T00:00:00Z");
     Instant t1 = Instant.parse("2020-01-02T00:00:00Z");
     UUID idReadyOld = UUID.fromString("00000000-0000-0000-0000-000000000002");
@@ -92,7 +144,7 @@ class VideoServiceTest {
     when(repo.findByStatusOrderByCreatedAtDesc(VideoStatus.READY))
         .thenReturn(List.of(readyNew, readyOld));
 
-    List<UUID> ids = videoService.list().stream().map(d -> d.id()).toList();
+    List<UUID> ids = videoService.list(true).stream().map(d -> d.id()).toList();
     assertEquals(List.of(idReadyNew, idReadyOld), ids);
   }
 

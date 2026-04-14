@@ -83,6 +83,8 @@ app:
     ffmpeg-thumbnail-timeout-seconds: 180
   ffmpeg:
     command: ffmpeg
+    # auto: use h264_nvenc when FFmpeg lists it and a minimal NVENC encode succeeds; none: always libx264; nvenc: prefer NVENC, fall back to libx264 if unusable
+    hardware-accel: auto
   hls-variants:
     - name: "480p"
       height: 480

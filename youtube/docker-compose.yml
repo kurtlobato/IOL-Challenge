@@ -31,6 +31,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    # Opcional: NVIDIA GPU para NVENC — requiere NVIDIA Container Toolkit, imagen con FFmpeg compilado con NVENC
+    # y p. ej. deploy.resources.reservations.devices (Compose v3) o --gpus all. Sin GPU, app.ffmpeg.hardware-accel=auto usa libx264.
     ports:
       - "8080:8080"
     environment:

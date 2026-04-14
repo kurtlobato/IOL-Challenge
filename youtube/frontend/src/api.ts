@@ -63,8 +63,10 @@ export async function getVideo(id: string): Promise<VideoItem> {
   return parseJson<VideoItem>(res);
 }
 
-export async function listVideos(): Promise<VideoItem[]> {
-  const res = await fetch(`${API}/videos`);
+export async function listVideos(readyOnly?: boolean): Promise<VideoItem[]> {
+  const q =
+    readyOnly === true ? "?readyOnly=true" : "";
+  const res = await fetch(`${API}/videos${q}`);
   return parseJson<VideoItem[]>(res);
 }
 

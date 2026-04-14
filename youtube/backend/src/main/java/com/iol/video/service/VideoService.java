@@ -141,10 +141,6 @@ public class VideoService {
   }
 
   /**
-   * Lista todos los videos: primero los {@link VideoStatus#READY}, luego el resto, ordenados por
-   * {@code createdAt} dentro de cada grupo.
-   */
-  /**
    * Persiste la duración detectada en transcodificación (segundos). Ignora valores no finitos o
    * no positivos.
    */
@@ -191,9 +187,17 @@ public class VideoService {
     return repo.findById(id).orElseThrow().getViewCount();
   }
 
+  /**
+   * Lista de videos: por defecto incluye todos los estados (grilla principal). Con {@code
+   * readyOnly=true} solo {@link VideoStatus#READY} (p. ej. columna “siguientes videos” en detalle).
+   */
   @Transactional(readOnly = true)
-  public List<VideoDto> list() {
-    return repo.findByStatusOrderByCreatedAtDesc(VideoStatus.READY).stream()
+  public List<VideoDto> list(Boolean readyOnly) {
+    List<Video> rows =
+        Boolean.TRUE.equals(readyOnly)
+            ? repo.findByStatusOrderByCreatedAtDesc(VideoStatus.READY)
+            : repo.findAllByOrderByCreatedAtDesc();
+    return rows.stream()
         .map(v -> VideoDto.from(v, app.playbackBaseUrl(), storage))
         .toList();
   }

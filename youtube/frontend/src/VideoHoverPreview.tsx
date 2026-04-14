@@ -11,6 +11,8 @@ type Props = {
 };
 
 const PROBE_SEEK_MS = 100;
+/** Persistir posición en el mapa del padre sin spamear en cada frame. */
+const COMMIT_INTERVAL_MS = 750;
 
 function applyResumeTime(video: HTMLVideoElement, resumeAt: number) {
   if (resumeAt <= 0 || !Number.isFinite(resumeAt)) return;
@@ -122,6 +124,18 @@ export function VideoHoverPreview({
     return ratio * d;
   }, []);
 
+  const pointerInRail = useCallback((clientX: number, clientY: number) => {
+    const rail = railRef.current;
+    if (!rail) return false;
+    const r = rail.getBoundingClientRect();
+    return (
+      clientX >= r.left &&
+      clientX <= r.right &&
+      clientY >= r.top &&
+      clientY <= r.bottom
+    );
+  }, []);
+
   const seekTo = useCallback((seconds: number) => {
     const video = videoRef.current;
     if (!video) return;
@@ -180,8 +194,26 @@ export function VideoHoverPreview({
       resumeAt,
     });
 
+    const target = resumeAt;
+    const tryResume = () => {
+      if (target > 0 && Number.isFinite(target)) {
+        applyResumeTime(main, target);
+      }
+    };
+    // HLS: el primer canplay a veces llega antes de que el seek sea estable; repetimos en metadatos/datos.
+    main.addEventListener("loadedmetadata", tryResume);
+    main.addEventListener("loadeddata", tryResume);
+    main.addEventListener("canplay", tryResume);
+    const delayed = window.setTimeout(tryResume, 200);
+    const delayed2 = window.setTimeout(tryResume, 650);
+
     return () => {
       clearTipThrottle();
+      window.clearTimeout(delayed);
+      window.clearTimeout(delayed2);
+      main.removeEventListener("loadedmetadata", tryResume);
+      main.removeEventListener("loadeddata", tryResume);
+      main.removeEventListener("canplay", tryResume);
       cleanMain();
     };
   }, [manifestUrl, resumeAt, clearTipThrottle]);
@@ -248,8 +280,19 @@ export function VideoHoverPreview({
       if (Number.isFinite(t) && t >= 0) onCommitRef.current?.(t);
     };
 
+    let lastPeriodicCommit = 0;
     const sync = () => {
-      setProgress({ current: readCurrent(main), duration: readDuration(main) });
+      const cur = readCurrent(main);
+      const dur = readDuration(main);
+      setProgress({ current: cur, duration: dur });
+      const now = performance.now();
+      if (
+        now - lastPeriodicCommit >= COMMIT_INTERVAL_MS &&
+        cur > 0.2
+      ) {
+        lastPeriodicCommit = now;
+        onCommitRef.current?.(cur);
+      }
     };
     main.addEventListener("timeupdate", sync);
     main.addEventListener("loadedmetadata", sync);
@@ -267,6 +310,7 @@ export function VideoHoverPreview({
   useEffect(() => {
     if (!scrubbing) return;
     const onMove = (e: MouseEvent) => {
+      if (!pointerInRail(e.clientX, e.clientY)) return;
       const t = timeFromClientX(e.clientX);
       if (t != null) seekTo(t);
     };
@@ -281,7 +325,7 @@ export function VideoHoverPreview({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [scrubbing, seekTo, timeFromClientX, clearTipThrottle]);
+  }, [scrubbing, seekTo, timeFromClientX, pointerInRail, clearTipThrottle]);
 
   const { current, duration } = progress;
   const playedPct = duration > 0 ? (current / duration) * 100 : 0;

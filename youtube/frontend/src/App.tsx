@@ -89,10 +89,6 @@ export default function App() {
     }
     const fromList = items.find((v) => v.id === urlVideoId);
     if (fromList) {
-      if (fromList.status !== "READY") {
-        navigate("/", { replace: true });
-        return;
-      }
       setSelected(fromList);
       return;
     }
@@ -100,10 +96,6 @@ export default function App() {
     void getVideo(urlVideoId)
       .then((v) => {
         if (cancelled) return;
-        if (v.status !== "READY") {
-          navigate("/", { replace: true });
-          return;
-        }
         setSelected(v);
         setItems((prev) => {
           if (prev.some((x) => x.id === v.id)) return prev.map((x) => (x.id === v.id ? v : x));
@@ -374,7 +366,9 @@ export default function App() {
           <div className="related-section">
             <h3 style={{marginTop: 0}}>Siguientes videos</h3>
             <div className="related-list">
-              {items.filter((v) => v.id !== selected.id).map((v) => (
+              {items
+                .filter((v) => v.status === "READY" && v.id !== selected.id)
+                .map((v) => (
                 <div
                   key={v.id}
                   className="related-row related-row-ready"
@@ -466,7 +460,9 @@ export default function App() {
                     ▶
                   </span>
                 )}
-                {v.manifestUrl && hoverPreviewId === v.id ? (
+                {v.manifestUrl &&
+                hoverPreviewId === v.id &&
+                cardMenuOpenId !== v.id ? (
                   <VideoHoverPreview
                     manifestUrl={v.manifestUrl}
                     posterUrl={v.thumbnailUrl}
@@ -506,6 +502,8 @@ export default function App() {
                           aria-label="Acciones del video"
                           aria-expanded={cardMenuOpenId === v.id}
                           aria-haspopup="menu"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onMouseDown={(e) => e.stopPropagation()}
                           onClick={(e) => {
                             e.stopPropagation();
                             setCardMenuOpenId((cur) => (cur === v.id ? null : v.id));
@@ -528,6 +526,8 @@ export default function App() {
                           <div
                             className="card-more-menu"
                             role="menu"
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onMouseDown={(e) => e.stopPropagation()}
                             onClick={(e) => e.stopPropagation()}
                           >
                             <button

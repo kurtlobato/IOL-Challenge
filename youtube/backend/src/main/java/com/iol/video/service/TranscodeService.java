@@ -2,6 +2,7 @@ package com.iol.video.service;
 
 import com.iol.video.config.AppProperties;
 import com.iol.video.domain.Video;
+import com.iol.video.ffmpeg.FfmpegCapabilities;
 import com.iol.video.storage.ObjectStorageService;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -34,12 +35,17 @@ public class TranscodeService {
   private final ObjectStorageService storage;
   private final AppProperties app;
   private final VideoService videoService;
+  private final FfmpegCapabilities ffmpegCapabilities;
 
   public TranscodeService(
-      ObjectStorageService storage, AppProperties app, VideoService videoService) {
+      ObjectStorageService storage,
+      AppProperties app,
+      VideoService videoService,
+      FfmpegCapabilities ffmpegCapabilities) {
     this.storage = storage;
     this.app = app;
     this.videoService = videoService;
+    this.ffmpegCapabilities = ffmpegCapabilities;
   }
 
   private static String abbrevTitle(String title) {
@@ -286,25 +292,49 @@ public class TranscodeService {
     int videoBps = Math.max(256_000, v.bandwidthBps() - AUDIO_BPS);
     String maxrateK = (videoBps + 999) / 1000 + "k";
     String bufK = (videoBps * 2 + 999) / 1000 + "k";
+    String avgVk = (videoBps + 999) / 1000 + "k";
     List<String> cmd = new ArrayList<>();
     cmd.add(app.ffmpeg().command());
+    cmd.addAll(List.of("-y", "-i", input.toAbsolutePath().toString()));
+    if (ffmpegCapabilities.useNvencForHls()) {
+      cmd.addAll(
+          List.of(
+              "-vf",
+              "scale=-2:" + v.height(),
+              "-c:v",
+              "h264_nvenc",
+              "-preset",
+              "p4",
+              "-tune",
+              "hq",
+              "-rc",
+              "vbr",
+              "-cq",
+              "23",
+              "-b:v",
+              avgVk,
+              "-maxrate",
+              maxrateK,
+              "-bufsize",
+              bufK));
+    } else {
+      cmd.addAll(
+          List.of(
+              "-vf",
+              "scale=-2:" + v.height(),
+              "-c:v",
+              "libx264",
+              "-preset",
+              "veryfast",
+              "-crf",
+              "23",
+              "-maxrate",
+              maxrateK,
+              "-bufsize",
+              bufK));
+    }
     cmd.addAll(
         List.of(
-            "-y",
-            "-i",
-            input.toAbsolutePath().toString(),
-            "-vf",
-            "scale=-2:" + v.height(),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "23",
-            "-maxrate",
-            maxrateK,
-            "-bufsize",
-            bufK,
             "-c:a",
             "aac",
             "-b:a",

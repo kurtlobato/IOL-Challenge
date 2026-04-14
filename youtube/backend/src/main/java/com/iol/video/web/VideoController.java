@@ -58,8 +58,8 @@ public class VideoController {
   }
 
   @GetMapping
-  public List<VideoDto> list() {
-    return videoService.list();
+  public List<VideoDto> list(@RequestParam(required = false) Boolean readyOnly) {
+    return videoService.list(readyOnly);
   }
 
   @DeleteMapping("/{id}")

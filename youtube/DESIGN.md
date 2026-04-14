@@ -146,7 +146,7 @@ flowchart TB
 
 - Flujo de subida: `POST /api/videos` → `PUT` al `uploadUrl` presignado (el tráfico sale del navegador hacia MinIO) → `POST /api/videos/{id}/complete`.
 - `uploaderId` se genera en `localStorage` para poder borrar solo los vídeos propios (`DELETE` con parámetro de consulta); no hay sesión en servidor.
-- **Listado público (`GET /api/videos`):** solo devuelve vídeos en estado **`READY`**, ordenados por fecha de creación con los más recientes primero. La grilla de inicio y la sección de vídeos relacionados no muestran estados de procesamiento ni etiquetas de estado; los estados intermedios siguen existiendo en API y base de datos para quien hace sondeo con `GET /api/videos/{id}` durante subida y transcodificación.
+- **`GET /api/videos`:** devuelve **todos** los estados, más recientes primero (grilla principal). **`GET /api/videos?readyOnly=true`:** solo **`READY`** (p. ej. si el cliente quiere un catálogo solo reproducibles). En la UI, la columna **Siguientes videos** del detalle filtra a `READY` en cliente; la grilla principal muestra también subidas y procesamiento.
 - **Experiencia en detalle:** reproductor con controles propios (reproducción, barra de tiempo, silencio, pantalla completa); en pantalla completa el diseño usa una columna flexible para mantener la barra visible. **Vista previa al pasar el cursor** sobre la miniatura de la tarjeta: un segundo flujo HLS en un vídeo pequeño dentro del *tooltip* (con indicador de carga mientras se resuelve el *seek*; *poster* opcional como respaldo); la subida en curso puede cancelarse con `AbortController` si el usuario elimina el elemento.
 
 ### Decisiones
@@ -258,7 +258,7 @@ stateDiagram-v2
   READY --> [*]
 ```
 
-- El listado expuesto al cliente para la **página principal** (`VideoService.list` / `GET /api/videos`) **filtra** a `READY` únicamente; el resto de estados son internos al *pipeline* hasta que el vídeo queda listo (salvo consultas por identificador para seguimiento).
+- **`VideoService.list(null)`** / **`GET /api/videos`** incluye todos los estados para la grilla principal; **`list(true)`** / **`?readyOnly=true`** limita a `READY` cuando hace falta (p. ej. listas solo reproducibles).
 - Bloqueo **pesimista** al elegir el siguiente `UPLOADED` y al buscar `PROCESSING` obsoleto (*stale lease*) para recuperación.
 - **`processing_lease_until`**: evita que dos *workers* procesen el mismo vídeo de forma indefinida; se renueva durante FFmpeg.
 
@@ -371,6 +371,7 @@ flowchart TB
 ```
 
 - FFmpeg se invoca como subproceso; tiempos de espera configurables en `application.yml`.
+- **Aceleración GPU (NVENC):** al arranque, `FfmpegCapabilities` comprueba que `ffmpeg -encoders` incluya `h264_nvenc` y ejecuta una codificación mínima de prueba (`lavfi` → `h264_nvenc`). Si tiene éxito y `app.ffmpeg.hardware-accel` no es `none`, las variantes HLS usan **h264_nvenc**; si no, **libx264**. Valores: `auto` (por defecto), `none`, `nvenc` (preferir NVENC y degradar a *software* si no es usable).
 - **No** es HLS en vivo (*live*): el estado pasa a `READY` cuando terminó todo el *pipeline* (véase README).
 
 ### Decisiones

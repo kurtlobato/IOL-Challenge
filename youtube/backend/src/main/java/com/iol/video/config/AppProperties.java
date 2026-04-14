@@ -14,6 +14,12 @@ public record AppProperties(
     StaleCreatedCleanup staleCreatedCleanup) {
 
   public AppProperties {
+    if (transcode == null) {
+      transcode = new Transcode(3, 4000L, 120, 45, 45, 7200, 180);
+    }
+    if (ffmpeg == null) {
+      ffmpeg = new Ffmpeg("ffmpeg", "auto");
+    }
     if (hlsVariants == null || hlsVariants.isEmpty()) {
       hlsVariants =
           List.of(
@@ -55,7 +61,21 @@ public record AppProperties(
     }
   }
 
-  public record Ffmpeg(String command) {}
+  public record Ffmpeg(String command, String hardwareAccel) {
+    public Ffmpeg {
+      if (command == null || command.isBlank()) {
+        command = "ffmpeg";
+      }
+      if (hardwareAccel == null || hardwareAccel.isBlank()) {
+        hardwareAccel = "auto";
+      }
+    }
+
+    /** For tests: default {@code hardware-accel=auto}. */
+    public Ffmpeg(String command) {
+      this(command, "auto");
+    }
+  }
 
   /**
    * Limpieza de filas {@code CREATED} abandonadas: edad mínima y frecuencia del job ({@code poll-ms},

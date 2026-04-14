@@ -36,8 +36,11 @@ public interface VideoRepository extends JpaRepository<Video, UUID> {
 
   Optional<Video> findByUploaderIdAndUploadIdempotencyKey(String uploaderId, String uploadIdempotencyKey);
 
-  /** Listado público: solo listos para reproducir, más recientes primero. */
+  /** Listado por estado, más recientes primero (p. ej. solo READY para “siguientes videos”). */
   List<Video> findByStatusOrderByCreatedAtDesc(VideoStatus status);
+
+  /** Catálogo completo para la grilla principal, más recientes primero. */
+  List<Video> findAllByOrderByCreatedAtDesc();
 
   /**
    * Inserta par (video, viewer) si no existía y, solo en ese caso, incrementa {@code view_count}.

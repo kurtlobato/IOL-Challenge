@@ -52,7 +52,7 @@ class VideoControllerTest {
   @Test
   void listReturnsVideos() throws Exception {
     UUID id = UUID.randomUUID();
-    when(videoService.list())
+    when(videoService.list(any()))
         .thenReturn(
             List.of(
                 new VideoDto(
@@ -72,6 +72,7 @@ class VideoControllerTest {
         .andExpect(status().isOk())
         .andExpect(jsonPath("$[0].title").value("hello"))
         .andExpect(jsonPath("$[0].status").value("READY"));
+    mockMvc.perform(get("/api/videos").param("readyOnly", "true")).andExpect(status().isOk());
   }
 
   @Test
