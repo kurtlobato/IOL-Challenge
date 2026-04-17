@@ -70,13 +70,60 @@ body {
   align-content: start;
 }
 
-.series-section-title {
+.dashboard-subview-header {
   grid-column: 1 / -1;
-  margin: 8px 0 4px;
-  font-size: 1.15rem;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.dashboard-back {
+  background: #2a2a2a;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #eee;
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.dashboard-back:hover {
+  background: #333;
+}
+
+.dashboard-subview-title {
+  margin: 0;
+  font-size: 1.2rem;
   font-weight: 700;
-  color: #e8e8e8;
-  letter-spacing: -0.02em;
+  color: #f1f1f1;
+}
+
+.dashboard-empty-msg {
+  text-align: center;
+  color: #888;
+  padding: 24px;
+  font-size: 1rem;
+}
+
+.series-browse-card {
+  cursor: pointer;
+}
+
+.series-browse-card .series-browse-thumb {
+  position: relative;
+}
+
+.series-browse-ep-count {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.75);
+  color: #eee;
 }
 
 /* ─── VIDEO CARD ─────────────────────────────────────────── */

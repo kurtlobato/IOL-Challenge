@@ -350,6 +350,8 @@ type videoDTO struct {
 	Description     string         `json:"description"`
 	Genre           string         `json:"genre"`
 	Year            *int           `json:"year,omitempty"`
+	Season          *int           `json:"season,omitempty"`
+	Episode         *int           `json:"episode,omitempty"`
 	Series          *seriesRefDTO  `json:"series,omitempty"`
 	Status          string         `json:"status"`
 	StreamURL       string         `json:"streamUrl"`
@@ -506,6 +508,8 @@ func (s *Server) toVideoDTO(ctx context.Context, v store.Video, publicBase, nid 
 		Description:     v.Description,
 		Genre:           v.Genre,
 		Year:            v.Year,
+		Season:          v.Season,
+		Episode:         v.Episode,
 		Series:          sref,
 		Status:          "READY",
 		StreamURL:       stream,
@@ -830,11 +834,27 @@ func (s *Server) handleGetVideo(w http.ResponseWriter, r *http.Request) {
 }
 
 type patchVideoBody struct {
-	Title       string  `json:"title"`
-	Description string  `json:"description"`
-	Genre       string  `json:"genre"`
-	Year        *int    `json:"year"`
-	SeriesID    *string `json:"seriesId"`
+	Title       string          `json:"title"`
+	Description string          `json:"description"`
+	Genre       string          `json:"genre"`
+	Year        *int            `json:"year"`
+	SeriesID    *string         `json:"seriesId"`
+	Season      json.RawMessage `json:"season"`
+	Episode     json.RawMessage `json:"episode"`
+}
+
+func parseJSONOptionalInt(raw json.RawMessage) (present bool, val *int, err error) {
+	if len(raw) == 0 {
+		return false, nil, nil
+	}
+	if string(raw) == "null" {
+		return true, nil, nil
+	}
+	var n int
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return false, nil, err
+	}
+	return true, &n, nil
 }
 
 func (s *Server) handlePatchVideo(w http.ResponseWriter, r *http.Request) {
@@ -848,6 +868,11 @@ func (s *Server) handlePatchVideo(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "video lives on another node; use streamUrl from list")
 		return
 	}
+	prev, err := s.store.GetVideo(r.Context(), vid)
+	if err != nil || prev == nil {
+		http.NotFound(w, r)
+		return
+	}
 	var body patchVideoBody
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid json")
@@ -855,6 +880,16 @@ func (s *Server) handlePatchVideo(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(body.Title) == "" {
 		httpError(w, http.StatusBadRequest, "title required")
+		return
+	}
+	seasonPresent, seasonVal, err := parseJSONOptionalInt(body.Season)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "invalid season")
+		return
+	}
+	episodePresent, episodeVal, err := parseJSONOptionalInt(body.Episode)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "invalid episode")
 		return
 	}
 	var localSeries *string
@@ -875,7 +910,37 @@ func (s *Server) handlePatchVideo(w http.ResponseWriter, r *http.Request) {
 		}
 		localSeries = &suid
 	}
-	if err := s.store.UpdateVideoMetadata(r.Context(), vid, body.Title, body.Description, body.Genre, body.Year, localSeries); err != nil {
+	var prevSID string
+	if prev.SeriesID != nil {
+		prevSID = *prev.SeriesID
+	}
+	var newSID string
+	if localSeries != nil {
+		newSID = *localSeries
+	}
+	seriesChanged := prevSID != newSID
+	var sea, ep *int
+	if localSeries == nil {
+		sea, ep = nil, nil
+	} else {
+		switch {
+		case seasonPresent:
+			sea = seasonVal
+		case !seriesChanged:
+			sea = prev.Season
+		default:
+			sea = nil
+		}
+		switch {
+		case episodePresent:
+			ep = episodeVal
+		case !seriesChanged:
+			ep = prev.Episode
+		default:
+			ep = nil
+		}
+	}
+	if err := s.store.UpdateVideoMetadata(r.Context(), vid, body.Title, body.Description, body.Genre, body.Year, localSeries, sea, ep); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			http.NotFound(w, r)
 			return

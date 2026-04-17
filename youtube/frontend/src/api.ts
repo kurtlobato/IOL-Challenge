@@ -24,6 +24,21 @@ export function setApiBase(url: string): void {
   localStorage.setItem(STORAGE_KEY, t);
 }
 
+/** Misma API tolerando distinta cadena (p. ej. IP vs nombre mDNS). */
+export function sameApiEndpoint(a: string, b: string): boolean {
+  const na = a.trim().replace(/\/$/, "");
+  const nb = b.trim().replace(/\/$/, "");
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  try {
+    const ua = new URL(na.includes("://") ? na : `http://${na}`);
+    const ub = new URL(nb.includes("://") ? nb : `http://${nb}`);
+    return ua.hostname === ub.hostname && ua.port === ub.port;
+  } catch {
+    return false;
+  }
+}
+
 function apiPrefix(): string {
   const b = getApiBase();
   if (!b) return "/api";
@@ -48,6 +63,8 @@ export type VideoItem = {
   description?: string;
   genre?: string;
   year?: number | null;
+  season?: number | null;
+  episode?: number | null;
   series?: SeriesRef | null;
   status: string;
   streamUrl: string;
@@ -158,6 +175,8 @@ export type PatchVideoBody = {
   genre: string;
   year: number | null;
   seriesId: string | null;
+  season: number | null;
+  episode: number | null;
 };
 
 export async function patchVideo(
@@ -179,6 +198,8 @@ export async function patchVideo(
       genre: body.genre.trim(),
       year: body.year,
       seriesId: body.seriesId,
+      season: body.season,
+      episode: body.episode,
     }),
   });
   return normalizeVideo(await parseJson<VideoItem>(res));
@@ -304,6 +325,8 @@ function normalizeVideo(v: VideoItem): VideoItem {
     description: v.description ?? "",
     genre: v.genre ?? "",
     year: v.year ?? null,
+    season: v.season ?? null,
+    episode: v.episode ?? null,
     series: v.series ?? null,
     source: v.source ?? null,
     compat: v.compat ?? null,

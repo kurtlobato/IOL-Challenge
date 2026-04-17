@@ -31,6 +31,8 @@ type Video struct {
 	SeriesDescription  string
 	SeriesGenre        string
 	SeriesYear         *int
+	Season             *int
+	Episode            *int
 }
 
 type Store struct {
@@ -163,6 +165,28 @@ CREATE TABLE IF NOT EXISTS series (
 			return err
 		}
 	}
+	return s.migrateSeasonEpisodeColumns()
+}
+
+func (s *Store) migrateSeasonEpisodeColumns() error {
+	for _, c := range []struct {
+		name string
+		ddl  string
+	}{
+		{"season", "ALTER TABLE videos ADD COLUMN season INTEGER"},
+		{"episode", "ALTER TABLE videos ADD COLUMN episode INTEGER"},
+	} {
+		var n int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('videos') WHERE name = ?`, c.name).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			continue
+		}
+		if _, err := s.db.Exec(c.ddl); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -174,8 +198,8 @@ func (s *Store) UpsertVideo(ctx context.Context, v *Video) error {
 		dur = sql.NullFloat64{Float64: *v.DurationSeconds, Valid: true}
 	}
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO videos (id, root_index, rel_path, title, size_bytes, mtime_ns, content_type, duration_seconds, indexed_at, hidden, description, genre, year, series_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', '', NULL, NULL)
+INSERT INTO videos (id, root_index, rel_path, title, size_bytes, mtime_ns, content_type, duration_seconds, indexed_at, hidden, description, genre, year, season, episode, series_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', '', NULL, NULL, NULL, NULL)
 ON CONFLICT(id) DO UPDATE SET
   root_index = excluded.root_index,
   rel_path = excluded.rel_path,
@@ -189,6 +213,8 @@ ON CONFLICT(id) DO UPDATE SET
   description = videos.description,
   genre = videos.genre,
   year = videos.year,
+  season = videos.season,
+  episode = videos.episode,
   series_id = videos.series_id
 `, v.ID, v.RootIndex, v.RelPath, v.Title, v.SizeBytes, mtimeNs, v.ContentType, dur, v.IndexedAt.UTC().Format(time.RFC3339Nano))
 	return err
@@ -198,7 +224,7 @@ ON CONFLICT(id) DO UPDATE SET
 func (s *Store) ListVideos(ctx context.Context) ([]Video, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT v.id, v.root_index, v.rel_path, v.title, v.size_bytes, v.mtime_ns, v.content_type, v.duration_seconds, v.indexed_at,
-       v.description, v.genre, v.year, v.series_id,
+       v.description, v.genre, v.year, v.season, v.episode, v.series_id,
        s.title, s.thumb_rel, s.description, s.genre, s.year
 FROM videos v
 LEFT JOIN series s ON v.series_id = s.id
@@ -229,11 +255,12 @@ func scanVideoRow(rows *sql.Rows) (Video, error) {
 	var indexed string
 	var desc, genre sql.NullString
 	var year sql.NullInt64
+	var season, episode sql.NullInt64
 	var seriesID, joinTitle, joinThumb sql.NullString
 	var sdesc, sgenre sql.NullString
 	var syear sql.NullInt64
 	if err := rows.Scan(&v.ID, &v.RootIndex, &v.RelPath, &v.Title, &v.SizeBytes, &mtimeNs, &v.ContentType, &dur, &indexed,
-		&desc, &genre, &year, &seriesID, &joinTitle, &joinThumb, &sdesc, &sgenre, &syear); err != nil {
+		&desc, &genre, &year, &season, &episode, &seriesID, &joinTitle, &joinThumb, &sdesc, &sgenre, &syear); err != nil {
 		return v, err
 	}
 	if desc.Valid {
@@ -245,6 +272,14 @@ func scanVideoRow(rows *sql.Rows) (Video, error) {
 	if year.Valid {
 		y := int(year.Int64)
 		v.Year = &y
+	}
+	if season.Valid {
+		s := int(season.Int64)
+		v.Season = &s
+	}
+	if episode.Valid {
+		e := int(episode.Int64)
+		v.Episode = &e
 	}
 	if seriesID.Valid && strings.TrimSpace(seriesID.String) != "" {
 		sid := seriesID.String
@@ -289,11 +324,12 @@ func scanVideoRowSingle(row *sql.Row) (Video, error) {
 	var indexed string
 	var desc, genre sql.NullString
 	var year sql.NullInt64
+	var season, episode sql.NullInt64
 	var seriesID, joinTitle, joinThumb sql.NullString
 	var sdesc, sgenre sql.NullString
 	var syear sql.NullInt64
 	err := row.Scan(&v.ID, &v.RootIndex, &v.RelPath, &v.Title, &v.SizeBytes, &mtimeNs, &v.ContentType, &dur, &indexed,
-		&desc, &genre, &year, &seriesID, &joinTitle, &joinThumb, &sdesc, &sgenre, &syear)
+		&desc, &genre, &year, &season, &episode, &seriesID, &joinTitle, &joinThumb, &sdesc, &sgenre, &syear)
 	if err != nil {
 		return v, err
 	}
@@ -306,6 +342,14 @@ func scanVideoRowSingle(row *sql.Row) (Video, error) {
 	if year.Valid {
 		y := int(year.Int64)
 		v.Year = &y
+	}
+	if season.Valid {
+		s := int(season.Int64)
+		v.Season = &s
+	}
+	if episode.Valid {
+		e := int(episode.Int64)
+		v.Episode = &e
 	}
 	if seriesID.Valid && strings.TrimSpace(seriesID.String) != "" {
 		sid := seriesID.String
@@ -346,7 +390,7 @@ func scanVideoRowSingle(row *sql.Row) (Video, error) {
 func (s *Store) GetVideo(ctx context.Context, id string) (*Video, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT v.id, v.root_index, v.rel_path, v.title, v.size_bytes, v.mtime_ns, v.content_type, v.duration_seconds, v.indexed_at,
-       v.description, v.genre, v.year, v.series_id,
+       v.description, v.genre, v.year, v.season, v.episode, v.series_id,
        s.title, s.thumb_rel, s.description, s.genre, s.year
 FROM videos v
 LEFT JOIN series s ON v.series_id = s.id
@@ -410,12 +454,13 @@ func (s *Store) HideVideo(ctx context.Context, id string) error {
 
 // UpdateVideoTitle cambia solo el título (compatibilidad).
 func (s *Store) UpdateVideoTitle(ctx context.Context, id, title string) error {
-	return s.UpdateVideoMetadata(ctx, id, title, "", "", nil, nil)
+	return s.UpdateVideoMetadata(ctx, id, title, "", "", nil, nil, nil, nil)
 }
 
 // UpdateVideoMetadata actualiza metadatos editables del vídeo.
 // seriesLocalID es el UUID local de serie o nil para quitar; no usar id compuesto.
-func (s *Store) UpdateVideoMetadata(ctx context.Context, id, title, description, genre string, year *int, seriesLocalID *string) error {
+// Si no hay serie, season y episode se fuerzan a NULL.
+func (s *Store) UpdateVideoMetadata(ctx context.Context, id, title, description, genre string, year *int, seriesLocalID *string, season, episode *int) error {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return fmt.Errorf("empty title")
@@ -427,13 +472,23 @@ func (s *Store) UpdateVideoMetadata(ctx context.Context, id, title, description,
 		y = sql.NullInt64{Int64: int64(*year), Valid: true}
 	}
 	var sid sql.NullString
-	if seriesLocalID != nil && strings.TrimSpace(*seriesLocalID) != "" {
+	hasSeries := seriesLocalID != nil && strings.TrimSpace(*seriesLocalID) != ""
+	if hasSeries {
 		sid = sql.NullString{String: strings.TrimSpace(*seriesLocalID), Valid: true}
 	}
+	var sea, ep sql.NullInt64
+	if hasSeries {
+		if season != nil {
+			sea = sql.NullInt64{Int64: int64(*season), Valid: true}
+		}
+		if episode != nil {
+			ep = sql.NullInt64{Int64: int64(*episode), Valid: true}
+		}
+	}
 	res, err := s.db.ExecContext(ctx, `
-UPDATE videos SET title = ?, description = ?, genre = ?, year = ?, series_id = ?
+UPDATE videos SET title = ?, description = ?, genre = ?, year = ?, series_id = ?, season = ?, episode = ?
 WHERE id = ? AND COALESCE(hidden, 0) = 0`,
-		title, description, genre, y, sid, id)
+		title, description, genre, y, sid, sea, ep, id)
 	if err != nil {
 		return err
 	}

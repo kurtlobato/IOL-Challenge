@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   createSeries,
@@ -12,6 +12,7 @@ import {
   patchVideo,
   requestTranscodeMp4,
   setApiBase,
+  sameApiEndpoint,
   playbackOrigin,
   type SeriesItem,
   type VideoItem,
@@ -54,36 +55,54 @@ function canHoverPreviewVideo(v: VideoItem): boolean {
   return Boolean(v.streamUrl);
 }
 
-type DashboardGroup = { key: string; label: string | null; items: VideoItem[] };
+type SeriesSummary = {
+  id: string;
+  title: string;
+  thumbnailUrl: string | null;
+  episodeCount: number;
+};
 
-function groupForDashboard(items: VideoItem[]): DashboardGroup[] {
-  const bySeries = new Map<string, VideoItem[]>();
-  const titleBySeries = new Map<string, string>();
-  const noSeries: VideoItem[] = [];
+/** Una tarjeta por serie (miniatura + título + nº de capítulos). */
+function seriesSummariesFromItems(items: VideoItem[]): SeriesSummary[] {
+  const acc = new Map<string, { title: string; thumb: string | null; count: number }>();
   for (const v of items) {
     const sid = v.series?.id;
-    if (!sid) {
-      noSeries.push(v);
-      continue;
+    if (!sid) continue;
+    if (!acc.has(sid)) {
+      acc.set(sid, {
+        title: v.series?.title ?? sid,
+        thumb: v.series?.thumbnailUrl ?? v.thumbnailUrl ?? null,
+        count: 0,
+      });
     }
-    if (!titleBySeries.has(sid)) {
-      titleBySeries.set(sid, v.series?.title ?? sid);
+    const row = acc.get(sid)!;
+    row.count++;
+    if (!row.thumb) {
+      row.thumb = v.series?.thumbnailUrl ?? v.thumbnailUrl ?? null;
     }
-    if (!bySeries.has(sid)) bySeries.set(sid, []);
-    bySeries.get(sid)!.push(v);
   }
-  const orderedIds = [...bySeries.keys()].sort((a, b) =>
-    (titleBySeries.get(a) ?? "").localeCompare(titleBySeries.get(b) ?? "", "es"),
-  );
-  const out: DashboardGroup[] = orderedIds.map((id) => ({
-    key: id,
-    label: titleBySeries.get(id) ?? id,
-    items: bySeries.get(id)!,
-  }));
-  if (noSeries.length) {
-    out.push({ key: "sin-serie", label: null, items: noSeries });
-  }
-  return out;
+  return [...acc.entries()]
+    .map(([id, x]) => ({
+      id,
+      title: x.title,
+      thumbnailUrl: x.thumb,
+      episodeCount: x.count,
+    }))
+    .sort((a, b) => a.title.localeCompare(b.title, "es"));
+}
+
+function compareEpisodesInSeries(a: VideoItem, b: VideoItem): number {
+  const sa = a.season;
+  const sb = b.season;
+  if (sa != null && sb != null && sa !== sb) return sa - sb;
+  if (sa != null && sb == null) return -1;
+  if (sa == null && sb != null) return 1;
+  const ea = a.episode;
+  const eb = b.episode;
+  if (ea != null && eb != null && ea !== eb) return ea - eb;
+  if (ea != null && eb == null) return -1;
+  if (ea == null && eb != null) return 1;
+  return a.title.localeCompare(b.title, "es");
 }
 
 type VideoEditDraft = {
@@ -92,6 +111,8 @@ type VideoEditDraft = {
   genre: string;
   yearStr: string;
   seriesId: string;
+  seasonStr: string;
+  episodeStr: string;
 };
 
 export default function App() {
@@ -124,6 +145,8 @@ export default function App() {
     thumb: null as File | null,
   });
   const cardMenuRef = useRef<HTMLDivElement | null>(null);
+  /** null = inicio (series + vídeos sin serie); id = lista de capítulos de esa serie */
+  const [browseSeriesId, setBrowseSeriesId] = useState<string | null>(null);
 
   const location = useLocation();
   const navigate = useNavigate();
@@ -141,6 +164,48 @@ export default function App() {
   useEffect(() => {
     setSeedDraft(getApiBase());
   }, []);
+
+  const normUrl = (s: string) => s.trim().replace(/\/$/, "");
+
+  /** Alinea semilla con la fila mDNS aunque cambie host (IP ↔ .local). */
+  const canonicalSeed = useMemo(() => {
+    const stored = normUrl(getApiBase());
+    const draft = normUrl(seedDraft);
+    const cur = draft || stored;
+    if (!cur || discovered.length === 0) return cur;
+    const exact = discovered.find((n) => normUrl(n.baseUrl) === cur);
+    if (exact) return normUrl(exact.baseUrl);
+    const dirty = normUrl(seedDraft) !== normUrl(getApiBase());
+    if (dirty) return cur;
+    const fuzzy = discovered.find((n) => sameApiEndpoint(cur, n.baseUrl));
+    return fuzzy ? normUrl(fuzzy.baseUrl) : cur;
+  }, [discovered, seedDraft]);
+
+  const selectNodes = useMemo((): DiscoveredNode[] => {
+    if (!canonicalSeed || discovered.length === 0) return discovered;
+    if (discovered.some((n) => normUrl(n.baseUrl) === normUrl(canonicalSeed))) return discovered;
+    return [
+      {
+        nodeId: "__orphan_seed__",
+        name: "Semilla actual",
+        host: "",
+        port: 0,
+        baseUrl: canonicalSeed,
+      },
+      ...discovered,
+    ];
+  }, [discovered, canonicalSeed]);
+
+  useEffect(() => {
+    const stored = normUrl(getApiBase());
+    const draft = normUrl(seedDraft);
+    if (!stored || !canonicalSeed || stored === canonicalSeed) return;
+    if (draft !== stored) return;
+    if (sameApiEndpoint(stored, canonicalSeed)) {
+      setApiBase(canonicalSeed);
+      setSeedDraft(canonicalSeed);
+    }
+  }, [canonicalSeed, seedDraft]);
 
   const refreshDiscovery = useCallback(async () => {
     if (!window.lanflix) return;
@@ -387,6 +452,27 @@ export default function App() {
       }
       year = y;
     }
+    let season: number | null = null;
+    let episode: number | null = null;
+    const sid = cur.draft.seriesId.trim();
+    if (sid !== "") {
+      if (cur.draft.seasonStr.trim() !== "") {
+        const s = Number.parseInt(cur.draft.seasonStr, 10);
+        if (!Number.isFinite(s)) {
+          setError("Temporada inválida");
+          return;
+        }
+        season = s;
+      }
+      if (cur.draft.episodeStr.trim() !== "") {
+        const e = Number.parseInt(cur.draft.episodeStr, 10);
+        if (!Number.isFinite(e)) {
+          setError("Capítulo inválido");
+          return;
+        }
+        episode = e;
+      }
+    }
     try {
       const updated = await patchVideo(
         cur.video.id,
@@ -395,7 +481,9 @@ export default function App() {
           description: cur.draft.description,
           genre: cur.draft.genre,
           year,
-          seriesId: cur.draft.seriesId.trim() !== "" ? cur.draft.seriesId.trim() : null,
+          seriesId: sid !== "" ? sid : null,
+          season,
+          episode,
         },
         playbackOrigin(cur.video.streamUrl) || null,
       );
@@ -448,10 +536,153 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [selected, closeWatch]);
 
+  useEffect(() => {
+    if (!browseSeriesId) return;
+    if (!items.some((v) => v.series?.id === browseSeriesId)) {
+      setBrowseSeriesId(null);
+    }
+  }, [items, browseSeriesId]);
+
+  const seriesSummaries = seriesSummariesFromItems(items);
+  const looseVideos = items.filter((v) => !v.series?.id);
+  const episodesInBrowse = useMemo(() => {
+    if (!browseSeriesId) return [];
+    const eps = items.filter((v) => v.series?.id === browseSeriesId);
+    return [...eps].sort(compareEpisodesInSeries);
+  }, [items, browseSeriesId]);
+  const browseSeriesTitle =
+    items.find((v) => v.series?.id === browseSeriesId)?.series?.title ?? "Serie";
+
+  const renderVideoCard = (v: VideoItem) => (
+    <div
+      key={v.id}
+      className={
+        "video-card video-card-ready" + (needsTranscodeCta(v) ? " video-card--incompat" : "")
+      }
+      style={{ position: "relative" }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setCardMenu({ x: e.clientX, y: e.clientY, video: v });
+      }}
+    >
+      <div
+        className="thumbnail"
+        onClick={() => openWatch(v)}
+        onMouseEnter={() => setPreviewId(v.id)}
+        onMouseLeave={() => setPreviewId((cur) => (cur === v.id ? null : cur))}
+      >
+        {previewId === v.id && canHoverPreviewVideo(v) ? (
+          <div className="thumbnail-preview-wrap">
+            <video
+              className="thumbnail-preview-video"
+              muted
+              playsInline
+              preload="metadata"
+              loop
+              autoPlay
+              src={
+                v.transcode?.status === "READY" && v.transcode?.mp4Url
+                  ? v.transcode.mp4Url
+                  : v.streamUrl
+              }
+              onLoadedMetadata={(e) => {
+                const el = e.currentTarget;
+                try {
+                  el.currentTime = Math.min(
+                    3,
+                    Number.isFinite(el.duration) ? Math.max(0, el.duration - 0.25) : 3,
+                  );
+                } catch {
+                  // ignore
+                }
+              }}
+              onCanPlay={(e) => {
+                void e.currentTarget.play().catch(() => {});
+              }}
+            />
+          </div>
+        ) : null}
+        {v.thumbnailUrl ? <img src={v.thumbnailUrl} alt="" loading="lazy" /> : null}
+        <span className={`thumb-fallback${v.thumbnailUrl ? " is-hidden" : ""}`} aria-hidden>
+          ▶
+        </span>
+        {v.durationSeconds != null && Number.isFinite(v.durationSeconds) && v.durationSeconds > 0 ? (
+          <span className="thumb-duration">{formatVideoDurationHms(v.durationSeconds)}</span>
+        ) : null}
+        {needsTranscodeCta(v) ? (
+          <div
+            className={
+              "card-transcode-overlay" +
+              (transcodeOverlayAlwaysVisible(v, transcodingId) ? " card-transcode-overlay--forced" : "") +
+              (v.transcode?.status === "QUEUED" ||
+              v.transcode?.status === "RUNNING" ||
+              transcodingId === v.id
+                ? " card-transcode-overlay--busy"
+                : "")
+            }
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              const st = v.transcode?.status;
+              if (st === "QUEUED" || st === "RUNNING") return;
+              void startTranscode(v);
+            }}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.stopPropagation();
+              e.preventDefault();
+              const st = v.transcode?.status;
+              if (st === "QUEUED" || st === "RUNNING") return;
+              void startTranscode(v);
+            }}
+            role="button"
+            tabIndex={0}
+            aria-label={transcodeOverlayLabel(v, transcodingId)}
+          >
+            <span className="card-transcode-overlay-text">
+              {transcodeOverlayLabel(v, transcodingId)}
+            </span>
+          </div>
+        ) : null}
+      </div>
+      <div className="card-info">
+        <div className="avatar">▶</div>
+        <div className="card-text">
+          <div className="card-title-row">
+            <h3 className="card-title" onClick={() => openWatch(v)}>
+              {v.title}
+            </h3>
+          </div>
+          <p className="card-meta card-channel-row">
+            <span title={v.nodeName ?? v.nodeId}>
+              {v.nodeName && v.nodeName.trim() !== ""
+                ? v.nodeName
+                : `Nodo ${v.nodeId.slice(0, 8)}…`}
+            </span>
+            {v.compat?.browserPlayable === false && v.transcode?.status !== "READY" ? (
+              <span style={{ marginLeft: 8, color: "#f28b82" }} title={v.compat.reason ?? ""}>
+                No compatible
+              </span>
+            ) : null}
+          </p>
+          <p className="card-meta card-views-row">
+            {`${formatViewsLine(v.viewCount ?? 0)} • ${formatRelativeUploadDate(v.createdAt)}`}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <>
       <nav className="navbar">
-        <div className="navbar-brand" onClick={() => navigate("/")}>
+        <div
+          className="navbar-brand"
+          onClick={() => {
+            setBrowseSeriesId(null);
+            navigate("/");
+          }}
+        >
           <img className="navbar-logo" src="/favicon-32.png" alt="" width={28} height={28} />
           LANflix
         </div>
@@ -488,7 +719,7 @@ export default function App() {
               </button>
               {discovered.length > 0 ? (
                 <select
-                  value={seedDraft}
+                  value={canonicalSeed}
                   onChange={(e) => {
                     const v = e.target.value;
                     setSeedDraft(v);
@@ -505,7 +736,7 @@ export default function App() {
                     border: "1px solid #3a3a3a",
                   }}
                 >
-                  {discovered.map((n) => (
+                  {selectNodes.map((n) => (
                     <option key={n.nodeId} value={n.baseUrl}>
                       {n.name} ({n.baseUrl})
                     </option>
@@ -605,139 +836,63 @@ export default function App() {
         </main>
       ) : (
         <main className="dashboard">
-          {groupForDashboard(items).map((g) => (
-            <Fragment key={g.key}>
-              {g.label ? (
-                <div className="series-section-title" role="heading" aria-level={2}>
-                  {g.label}
-                </div>
-              ) : null}
-              {g.items.map((v) => (
-            <div
-              key={v.id}
-              className={
-                "video-card video-card-ready" + (needsTranscodeCta(v) ? " video-card--incompat" : "")
-              }
-              style={{ position: "relative" }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setCardMenu({ x: e.clientX, y: e.clientY, video: v });
-              }}
-            >
-              <div
-                className="thumbnail"
-                onClick={() => openWatch(v)}
-                onMouseEnter={() => setPreviewId(v.id)}
-                onMouseLeave={() => setPreviewId((cur) => (cur === v.id ? null : cur))}
-              >
-                {previewId === v.id && canHoverPreviewVideo(v) ? (
-                  <div className="thumbnail-preview-wrap">
-                    <video
-                      className="thumbnail-preview-video"
-                      muted
-                      playsInline
-                      preload="metadata"
-                      loop
-                      autoPlay
-                      src={
-                        v.transcode?.status === "READY" && v.transcode?.mp4Url
-                          ? v.transcode.mp4Url
-                          : v.streamUrl
-                      }
-                      onLoadedMetadata={(e) => {
-                        const el = e.currentTarget;
-                        try {
-                          el.currentTime = Math.min(
-                            3,
-                            Number.isFinite(el.duration) ? Math.max(0, el.duration - 0.25) : 3,
-                          );
-                        } catch {
-                          // ignore
-                        }
-                      }}
-                      onCanPlay={(e) => {
-                        void e.currentTarget.play().catch(() => {});
-                      }}
-                    />
-                  </div>
-                ) : null}
-                {v.thumbnailUrl ? <img src={v.thumbnailUrl} alt="" loading="lazy" /> : null}
-                <span className={`thumb-fallback${v.thumbnailUrl ? " is-hidden" : ""}`} aria-hidden>
-                  ▶
-                </span>
-                {v.durationSeconds != null &&
-                Number.isFinite(v.durationSeconds) &&
-                v.durationSeconds > 0 ? (
-                  <span className="thumb-duration">{formatVideoDurationHms(v.durationSeconds)}</span>
-                ) : null}
-                {needsTranscodeCta(v) ? (
-                  <div
-                    className={
-                      "card-transcode-overlay" +
-                      (transcodeOverlayAlwaysVisible(v, transcodingId)
-                        ? " card-transcode-overlay--forced"
-                        : "") +
-                      (v.transcode?.status === "QUEUED" ||
-                      v.transcode?.status === "RUNNING" ||
-                      transcodingId === v.id
-                        ? " card-transcode-overlay--busy"
-                        : "")
-                    }
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
-                      const st = v.transcode?.status;
-                      if (st === "QUEUED" || st === "RUNNING") return;
-                      void startTranscode(v);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key !== "Enter" && e.key !== " ") return;
-                      e.stopPropagation();
-                      e.preventDefault();
-                      const st = v.transcode?.status;
-                      if (st === "QUEUED" || st === "RUNNING") return;
-                      void startTranscode(v);
-                    }}
-                    role="button"
-                    tabIndex={0}
-                    aria-label={transcodeOverlayLabel(v, transcodingId)}
-                  >
-                    <span className="card-transcode-overlay-text">
-                      {transcodeOverlayLabel(v, transcodingId)}
-                    </span>
-                  </div>
-                ) : null}
+          {browseSeriesId ? (
+            <>
+              <div className="dashboard-subview-header">
+                <button
+                  type="button"
+                  className="dashboard-back"
+                  onClick={() => setBrowseSeriesId(null)}
+                >
+                  ← Volver
+                </button>
+                <h2 className="dashboard-subview-title">{browseSeriesTitle}</h2>
               </div>
-              <div className="card-info">
-                <div className="avatar">▶</div>
-                <div className="card-text">
-                  <div className="card-title-row">
-                    <h3 className="card-title" onClick={() => openWatch(v)}>
-                      {v.title}
-                    </h3>
-                  </div>
-                  <p className="card-meta card-channel-row">
-                    <span title={v.nodeName ?? v.nodeId}>
-                      {v.nodeName && v.nodeName.trim() !== ""
-                        ? v.nodeName
-                        : `Nodo ${v.nodeId.slice(0, 8)}…`}
-                    </span>
-                    {v.compat?.browserPlayable === false &&
-                    v.transcode?.status !== "READY" ? (
-                      <span style={{ marginLeft: 8, color: "#f28b82" }} title={v.compat.reason ?? ""}>
-                        No compatible
+              {episodesInBrowse.length === 0 ? (
+                <p className="dashboard-empty-msg" style={{ gridColumn: "1 / -1" }}>
+                  No hay capítulos en esta serie.
+                </p>
+              ) : (
+                episodesInBrowse.map((v) => renderVideoCard(v))
+              )}
+            </>
+          ) : (
+            <>
+              {seriesSummaries.map((s) => (
+                <div
+                  key={s.id}
+                  className="video-card video-card-ready series-browse-card"
+                  role="link"
+                  tabIndex={0}
+                  onClick={() => setBrowseSeriesId(s.id)}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter" && e.key !== " ") return;
+                    e.preventDefault();
+                    setBrowseSeriesId(s.id);
+                  }}
+                >
+                  <div className="thumbnail series-browse-thumb">
+                    {s.thumbnailUrl ? (
+                      <img src={s.thumbnailUrl} alt="" loading="lazy" />
+                    ) : (
+                      <span className="thumb-fallback" aria-hidden>
+                        ▶
                       </span>
-                    ) : null}
-                  </p>
-                  <p className="card-meta card-views-row">
-                    {`${formatViewsLine(v.viewCount ?? 0)} • ${formatRelativeUploadDate(v.createdAt)}`}
-                  </p>
+                    )}
+                    <span className="series-browse-ep-count">{s.episodeCount} capítulos</span>
+                  </div>
+                  <div className="card-info">
+                    <div className="avatar">▶</div>
+                    <div className="card-text">
+                      <h3 className="card-title">{s.title}</h3>
+                      <p className="card-meta card-channel-row">Serie</p>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
               ))}
-            </Fragment>
-          ))}
+              {looseVideos.map((v) => renderVideoCard(v))}
+            </>
+          )}
           {items.length === 0 && !loading && (
             <div
               style={{
@@ -792,6 +947,8 @@ export default function App() {
                         genre: v.genre ?? "",
                         yearStr: v.year != null ? String(v.year) : "",
                         seriesId: v.series?.id ?? "",
+                        seasonStr: v.season != null ? String(v.season) : "",
+                        episodeStr: v.episode != null ? String(v.episode) : "",
                       },
                     });
                     setCardMenu(null);
@@ -930,7 +1087,16 @@ export default function App() {
                       return;
                     }
                     setVideoEdit((cur) =>
-                      cur ? { ...cur, draft: { ...cur.draft, seriesId: val } } : cur,
+                      cur
+                        ? {
+                            ...cur,
+                            draft: {
+                              ...cur.draft,
+                              seriesId: val,
+                              ...(val === "" ? { seasonStr: "", episodeStr: "" } : {}),
+                            },
+                          }
+                        : cur,
                     );
                   }}
                 >
@@ -943,6 +1109,44 @@ export default function App() {
                   <option value="__new__">+ Agregar nueva serie…</option>
                 </select>
               </label>
+              {videoEdit.draft.seriesId.trim() !== "" ? (
+                <div className="video-edit-row">
+                  <label className="video-edit-label video-edit-label--half">
+                    Temporada
+                    <input
+                      type="text"
+                      className="title-edit-input"
+                      inputMode="numeric"
+                      placeholder="ej. 1"
+                      value={videoEdit.draft.seasonStr}
+                      onChange={(e) =>
+                        setVideoEdit((cur) =>
+                          cur
+                            ? { ...cur, draft: { ...cur.draft, seasonStr: e.target.value } }
+                            : cur,
+                        )
+                      }
+                    />
+                  </label>
+                  <label className="video-edit-label video-edit-label--half">
+                    Capítulo
+                    <input
+                      type="text"
+                      className="title-edit-input"
+                      inputMode="numeric"
+                      placeholder="ej. 3"
+                      value={videoEdit.draft.episodeStr}
+                      onChange={(e) =>
+                        setVideoEdit((cur) =>
+                          cur
+                            ? { ...cur, draft: { ...cur.draft, episodeStr: e.target.value } }
+                            : cur,
+                        )
+                      }
+                    />
+                  </label>
+                </div>
+              ) : null}
               <div className="modal-actions">
                 <button
                   type="button"
