@@ -159,8 +159,13 @@ func (s *Server) Router() http.Handler {
 
 	r.Get("/api/health", s.handleHealth)
 	r.Get("/api/nodes", s.handleNodes)
+	r.Get("/api/series", s.handleListSeries)
+	r.Post("/api/series", s.handlePostSeries)
+	r.Get("/api/series/{id}/thumbnail.jpg", s.handleGetSeriesThumbnail)
 	r.Get("/api/videos", s.handleListVideos)
 	r.Get("/api/videos/{id}", s.handleGetVideo)
+	r.Patch("/api/videos/{id}", s.handlePatchVideo)
+	r.Delete("/api/videos/{id}", s.handleDeleteVideo)
 	r.Get("/api/videos/{id}/thumbnail.jpg", s.handleGetThumbnail)
 	r.Post("/api/videos/{id}/thumbnail", s.handlePostThumbnailSet)
 	r.Get("/api/videos/{id}/stream", s.handleStream)
@@ -191,7 +196,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		o := r.Header.Get("Origin")
 		if o != "" {
 			w.Header().Set("Access-Control-Allow-Origin", o)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Lanflix-Depth")
 		}
 		if r.Method == http.MethodOptions {
@@ -338,23 +343,27 @@ type viewBody struct {
 }
 
 type videoDTO struct {
-	ID              string        `json:"id"`
-	NodeID          string        `json:"nodeId"`
-	NodeName        string        `json:"nodeName"`
-	Title           string        `json:"title"`
-	Status          string        `json:"status"`
-	StreamURL       string        `json:"streamUrl"`
-	ManifestURL     *string       `json:"manifestUrl"`
-	ThumbnailURL    *string       `json:"thumbnailUrl"`
-	ErrorMessage    *string       `json:"errorMessage"`
-	UploaderID      *string       `json:"uploaderId"`
-	CreatedAt       string        `json:"createdAt"`
-	ProgressPercent *int          `json:"progressPercent"`
-	DurationSeconds *float64      `json:"durationSeconds"`
-	ViewCount       int64         `json:"viewCount"`
-	Source          *sourceDTO    `json:"source,omitempty"`
-	Compat          *compatDTO    `json:"compat,omitempty"`
-	Transcode       *transcodeDTO `json:"transcode,omitempty"`
+	ID              string         `json:"id"`
+	NodeID          string         `json:"nodeId"`
+	NodeName        string         `json:"nodeName"`
+	Title           string         `json:"title"`
+	Description     string         `json:"description"`
+	Genre           string         `json:"genre"`
+	Year            *int           `json:"year,omitempty"`
+	Series          *seriesRefDTO  `json:"series,omitempty"`
+	Status          string         `json:"status"`
+	StreamURL       string         `json:"streamUrl"`
+	ManifestURL     *string        `json:"manifestUrl"`
+	ThumbnailURL    *string        `json:"thumbnailUrl"`
+	ErrorMessage    *string        `json:"errorMessage"`
+	UploaderID      *string        `json:"uploaderId"`
+	CreatedAt       string         `json:"createdAt"`
+	ProgressPercent *int           `json:"progressPercent"`
+	DurationSeconds *float64       `json:"durationSeconds"`
+	ViewCount       int64          `json:"viewCount"`
+	Source          *sourceDTO     `json:"source,omitempty"`
+	Compat          *compatDTO     `json:"compat,omitempty"`
+	Transcode       *transcodeDTO  `json:"transcode,omitempty"`
 }
 
 type sourceDTO struct {
@@ -467,11 +476,37 @@ func (s *Server) toVideoDTO(ctx context.Context, v store.Video, publicBase, nid 
 	src, compat := s.getCompat(ctx, v.ID)
 	tc := s.getTranscode(ctx, v.ID, base, comp)
 
+	var sref *seriesRefDTO
+	if v.SeriesID != nil && *v.SeriesID != "" && v.SeriesTitle != nil {
+		compS := composeID(nid, *v.SeriesID)
+		var st *string
+		if v.SeriesThumbRel != nil && strings.TrimSpace(*v.SeriesThumbRel) != "" && s.dataDir != "" {
+			full := filepath.Join(s.dataDir, filepath.FromSlash(*v.SeriesThumbRel))
+			if stf, err := os.Stat(full); err == nil && stf.Size() > 0 {
+				u := fmt.Sprintf("%s/api/series/%s/thumbnail.jpg", base, url.PathEscape(compS))
+				st = &u
+			}
+		}
+		sref = &seriesRefDTO{
+			ID:           compS,
+			NodeID:       nid,
+			Title:        *v.SeriesTitle,
+			Description:  v.SeriesDescription,
+			Genre:        v.SeriesGenre,
+			Year:         v.SeriesYear,
+			ThumbnailURL: st,
+		}
+	}
+
 	return videoDTO{
 		ID:              comp,
 		NodeID:          nid,
 		NodeName:        strings.TrimSpace(s.cfg.NodeName),
 		Title:           v.Title,
+		Description:     v.Description,
+		Genre:           v.Genre,
+		Year:            v.Year,
+		Series:          sref,
 		Status:          "READY",
 		StreamURL:       stream,
 		ManifestURL:     nil,
@@ -792,6 +827,96 @@ func (s *Server) handleGetVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, dto)
+}
+
+type patchVideoBody struct {
+	Title       string  `json:"title"`
+	Description string  `json:"description"`
+	Genre       string  `json:"genre"`
+	Year        *int    `json:"year"`
+	SeriesID    *string `json:"seriesId"`
+}
+
+func (s *Server) handlePatchVideo(w http.ResponseWriter, r *http.Request) {
+	id := readVideoIDParam(r)
+	nid, vid, composite := parseCompositeID(id)
+	if !composite {
+		vid = id
+		nid = s.nodeID
+	}
+	if nid != s.nodeID {
+		httpError(w, http.StatusNotFound, "video lives on another node; use streamUrl from list")
+		return
+	}
+	var body patchVideoBody
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(body.Title) == "" {
+		httpError(w, http.StatusBadRequest, "title required")
+		return
+	}
+	var localSeries *string
+	if body.SeriesID != nil && strings.TrimSpace(*body.SeriesID) != "" {
+		snid, suid, ok := parseCompositeID(strings.TrimSpace(*body.SeriesID))
+		if !ok {
+			suid = strings.TrimSpace(*body.SeriesID)
+			snid = s.nodeID
+		}
+		if snid != s.nodeID {
+			httpError(w, http.StatusBadRequest, "series must belong to this node")
+			return
+		}
+		se, err := s.store.GetSeries(r.Context(), suid)
+		if err != nil || se == nil {
+			httpError(w, http.StatusNotFound, "series not found")
+			return
+		}
+		localSeries = &suid
+	}
+	if err := s.store.UpdateVideoMetadata(r.Context(), vid, body.Title, body.Description, body.Genre, body.Year, localSeries); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			http.NotFound(w, r)
+			return
+		}
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	v, err := s.store.GetVideo(r.Context(), vid)
+	if err != nil || v == nil {
+		http.NotFound(w, r)
+		return
+	}
+	base := s.publicBaseFromRequest(r)
+	dto, err := s.toVideoDTO(r.Context(), *v, base, s.nodeID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, dto)
+}
+
+func (s *Server) handleDeleteVideo(w http.ResponseWriter, r *http.Request) {
+	id := readVideoIDParam(r)
+	nid, vid, composite := parseCompositeID(id)
+	if !composite {
+		vid = id
+		nid = s.nodeID
+	}
+	if nid != s.nodeID {
+		httpError(w, http.StatusNotFound, "video lives on another node; use streamUrl from list")
+		return
+	}
+	if err := s.store.HideVideo(r.Context(), vid); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			http.NotFound(w, r)
+			return
+		}
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {

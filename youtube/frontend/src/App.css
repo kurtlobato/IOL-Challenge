@@ -70,6 +70,15 @@ body {
   align-content: start;
 }
 
+.series-section-title {
+  grid-column: 1 / -1;
+  margin: 8px 0 4px;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #e8e8e8;
+  letter-spacing: -0.02em;
+}
+
 /* ─── VIDEO CARD ─────────────────────────────────────────── */
 .video-card {
   display: flex;
@@ -1370,4 +1379,130 @@ body {
   color: #e50914;
   margin: 0;
   font-size: 0.875rem;
+}
+
+/* Menú contextual en cards */
+.card-context-menu {
+  position: fixed;
+  z-index: 10050;
+  min-width: 200px;
+  padding: 6px 0;
+  background: #2a2a2a;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+
+.card-context-menu__item {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  border: none;
+  background: none;
+  color: #eee;
+  font-size: 0.9rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.card-context-menu__item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.card-context-menu__item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.card-context-menu__item--danger {
+  color: #ff6b6b;
+}
+
+.card-context-menu__item--danger:hover:not(:disabled) {
+  background: rgba(229, 9, 20, 0.15);
+}
+
+.title-edit-overlay {
+  z-index: 10060;
+}
+
+.title-edit-modal {
+  max-width: 420px;
+}
+
+.title-edit-body {
+  align-items: stretch;
+}
+
+.title-edit-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid #3a3a3a;
+  background: #212121;
+  color: #f1f1f1;
+  font-size: 1rem;
+  box-sizing: border-box;
+}
+
+.video-edit-modal {
+  max-width: 520px;
+}
+
+.video-edit-body {
+  align-items: stretch;
+  gap: 14px;
+}
+
+.video-edit-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  font-size: 0.85rem;
+  color: #aaa;
+}
+
+.video-edit-row {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+}
+
+.video-edit-label--half {
+  flex: 1;
+  min-width: 0;
+}
+
+.video-edit-textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid #3a3a3a;
+  background: #212121;
+  color: #f1f1f1;
+  font-size: 0.95rem;
+  resize: vertical;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+.video-edit-select {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid #3a3a3a;
+  background: #212121;
+  color: #f1f1f1;
+  font-size: 0.95rem;
+}
+
+.video-edit-file {
+  margin-top: 4px;
+  font-size: 0.85rem;
+  color: #ccc;
+}
+
+.series-create-overlay {
+  z-index: 10070;
 }

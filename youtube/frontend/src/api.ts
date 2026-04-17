@@ -30,11 +30,25 @@ function apiPrefix(): string {
   return `${b}/api`;
 }
 
+export type SeriesRef = {
+  id: string;
+  nodeId: string;
+  title: string;
+  description?: string;
+  genre?: string;
+  year?: number | null;
+  thumbnailUrl?: string | null;
+};
+
 export type VideoItem = {
   id: string;
   nodeId: string;
   nodeName?: string;
   title: string;
+  description?: string;
+  genre?: string;
+  year?: number | null;
+  series?: SeriesRef | null;
   status: string;
   streamUrl: string;
   manifestUrl: string | null;
@@ -63,6 +77,16 @@ export type VideoItem = {
     queuePosition?: number | null;
     outTimeMs?: number | null;
   } | null;
+};
+
+export type SeriesItem = {
+  id: string;
+  nodeId: string;
+  title: string;
+  description?: string;
+  genre?: string;
+  year?: number | null;
+  thumbnailUrl?: string | null;
 };
 
 export type TranscodeStatus = {
@@ -106,10 +130,99 @@ export async function listVideos(opts?: ListVideosOptions): Promise<VideoItem[]>
   return raw.map(normalizeVideo);
 }
 
-export async function getVideo(id: string): Promise<VideoItem> {
+/** Si el id es federado `nodeId:videoId`, devuelve `nodeId`; si no, null. */
+export function ownerNodeIdFromVideoId(id: string): string | null {
+  const i = id.indexOf(":");
+  if (i <= 0 || i >= id.length - 1) {
+    return null;
+  }
+  return id.slice(0, i);
+}
+
+export async function getVideo(
+  id: string,
+  apiOrigin?: string | null,
+): Promise<VideoItem> {
   const enc = encodeURIComponent(id);
-  const res = await fetch(`${apiPrefix()}/videos/${enc}`);
+  const prefix =
+    apiOrigin != null && apiOrigin !== ""
+      ? `${apiOrigin.replace(/\/$/, "")}/api`
+      : apiPrefix();
+  const res = await fetch(`${prefix}/videos/${enc}`);
   return normalizeVideo(await parseJson<VideoItem>(res));
+}
+
+export type PatchVideoBody = {
+  title: string;
+  description: string;
+  genre: string;
+  year: number | null;
+  seriesId: string | null;
+};
+
+export async function patchVideo(
+  id: string,
+  body: PatchVideoBody,
+  apiOrigin?: string | null,
+): Promise<VideoItem> {
+  const enc = encodeURIComponent(id);
+  const prefix =
+    apiOrigin != null && apiOrigin !== ""
+      ? `${apiOrigin.replace(/\/$/, "")}/api`
+      : apiPrefix();
+  const res = await fetch(`${prefix}/videos/${enc}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      title: body.title.trim(),
+      description: body.description.trim(),
+      genre: body.genre.trim(),
+      year: body.year,
+      seriesId: body.seriesId,
+    }),
+  });
+  return normalizeVideo(await parseJson<VideoItem>(res));
+}
+
+export async function listSeries(apiOrigin?: string | null): Promise<SeriesItem[]> {
+  const prefix =
+    apiOrigin != null && apiOrigin !== ""
+      ? `${apiOrigin.replace(/\/$/, "")}/api`
+      : apiPrefix();
+  const res = await fetch(`${prefix}/series`);
+  return parseJson<SeriesItem[]>(res);
+}
+
+export async function createSeries(
+  form: FormData,
+  apiOrigin?: string | null,
+): Promise<SeriesItem> {
+  const prefix =
+    apiOrigin != null && apiOrigin !== ""
+      ? `${apiOrigin.replace(/\/$/, "")}/api`
+      : apiPrefix();
+  const res = await fetch(`${prefix}/series`, { method: "POST", body: form });
+  return parseJson<SeriesItem>(res);
+}
+
+/** Borrado lógico: el vídeo deja de listarse en ese nodo (archivo en disco intacto). */
+export async function hideVideo(
+  id: string,
+  apiOrigin?: string | null,
+): Promise<void> {
+  const enc = encodeURIComponent(id);
+  const prefix =
+    apiOrigin != null && apiOrigin !== ""
+      ? `${apiOrigin.replace(/\/$/, "")}/api`
+      : apiPrefix();
+  const res = await fetch(`${prefix}/videos/${enc}`, { method: "DELETE" });
+  if (res.status === 204) {
+    return;
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error((err as { error?: string }).error ?? res.statusText);
+  }
 }
 
 export async function setThumbnailAtSeconds(
@@ -188,6 +301,10 @@ function normalizeVideo(v: VideoItem): VideoItem {
     viewCount: typeof v.viewCount === "number" ? v.viewCount : 0,
     manifestUrl: v.manifestUrl ?? null,
     streamUrl: v.streamUrl ?? "",
+    description: v.description ?? "",
+    genre: v.genre ?? "",
+    year: v.year ?? null,
+    series: v.series ?? null,
     source: v.source ?? null,
     compat: v.compat ?? null,
     transcode: v.transcode ?? null,

@@ -1,12 +1,19 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
+  createSeries,
   getApiBase,
   getVideo,
+  hideVideo,
+  listNodes,
+  listSeries,
   listVideos,
+  ownerNodeIdFromVideoId,
+  patchVideo,
   requestTranscodeMp4,
   setApiBase,
   playbackOrigin,
+  type SeriesItem,
   type VideoItem,
 } from "./api";
 import { VideoPlayer } from "./VideoPlayer";
@@ -47,6 +54,46 @@ function canHoverPreviewVideo(v: VideoItem): boolean {
   return Boolean(v.streamUrl);
 }
 
+type DashboardGroup = { key: string; label: string | null; items: VideoItem[] };
+
+function groupForDashboard(items: VideoItem[]): DashboardGroup[] {
+  const bySeries = new Map<string, VideoItem[]>();
+  const titleBySeries = new Map<string, string>();
+  const noSeries: VideoItem[] = [];
+  for (const v of items) {
+    const sid = v.series?.id;
+    if (!sid) {
+      noSeries.push(v);
+      continue;
+    }
+    if (!titleBySeries.has(sid)) {
+      titleBySeries.set(sid, v.series?.title ?? sid);
+    }
+    if (!bySeries.has(sid)) bySeries.set(sid, []);
+    bySeries.get(sid)!.push(v);
+  }
+  const orderedIds = [...bySeries.keys()].sort((a, b) =>
+    (titleBySeries.get(a) ?? "").localeCompare(titleBySeries.get(b) ?? "", "es"),
+  );
+  const out: DashboardGroup[] = orderedIds.map((id) => ({
+    key: id,
+    label: titleBySeries.get(id) ?? id,
+    items: bySeries.get(id)!,
+  }));
+  if (noSeries.length) {
+    out.push({ key: "sin-serie", label: null, items: noSeries });
+  }
+  return out;
+}
+
+type VideoEditDraft = {
+  title: string;
+  description: string;
+  genre: string;
+  yearStr: string;
+  seriesId: string;
+};
+
 export default function App() {
   const [items, setItems] = useState<VideoItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -58,6 +105,25 @@ export default function App() {
   const [selected, setSelected] = useState<VideoItem | null>(null);
   const [myViewerKey, setMyViewerKey] = useState("");
   const [previewId, setPreviewId] = useState<string | null>(null);
+  const [cardMenu, setCardMenu] = useState<{
+    x: number;
+    y: number;
+    video: VideoItem;
+  } | null>(null);
+  const [videoEdit, setVideoEdit] = useState<{
+    video: VideoItem;
+    draft: VideoEditDraft;
+  } | null>(null);
+  const [seriesList, setSeriesList] = useState<SeriesItem[]>([]);
+  const [seriesCreateOpen, setSeriesCreateOpen] = useState(false);
+  const [newSeriesDraft, setNewSeriesDraft] = useState({
+    title: "",
+    description: "",
+    genre: "",
+    yearStr: "",
+    thumb: null as File | null,
+  });
+  const cardMenuRef = useRef<HTMLDivElement | null>(null);
 
   const location = useLocation();
   const navigate = useNavigate();
@@ -184,7 +250,20 @@ export default function App() {
           setSelected(fromList);
           return;
         }
-        const one = await getVideo(urlVideoId);
+        let ownerOrigin: string | null = null;
+        const ownerNid = ownerNodeIdFromVideoId(urlVideoId);
+        if (ownerNid) {
+          try {
+            const nodes = await listNodes(12);
+            const n = nodes.find((x) => x.nodeId === ownerNid);
+            if (n?.baseUrl) {
+              ownerOrigin = new URL(n.baseUrl).origin;
+            }
+          } catch {
+            // sin grafo de nodos: se intenta solo el semilla
+          }
+        }
+        const one = await getVideo(urlVideoId, ownerOrigin);
         if (cancelled) return;
         setSelected(one);
         setItems((prev) => {
@@ -222,7 +301,10 @@ export default function App() {
         // Poll until READY/FAILED.
         for (let i = 0; i < 240; i++) {
           await new Promise((r) => setTimeout(r, 2000));
-          const updated = await getVideo(v.id);
+          const updated = await getVideo(
+            v.id,
+            playbackOrigin(v.streamUrl) || null,
+          );
           setItems((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
           setSelected((cur) => (cur?.id === updated.id ? updated : cur));
           const st = updated.transcode?.status;
@@ -249,6 +331,110 @@ export default function App() {
   const closeWatch = useCallback(() => {
     navigate("/", { replace: false });
   }, [navigate]);
+
+  useEffect(() => {
+    if (!cardMenu) return;
+    const onDown = (e: MouseEvent) => {
+      const el = cardMenuRef.current;
+      if (el && e.target instanceof Node && el.contains(e.target)) return;
+      setCardMenu(null);
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setCardMenu(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [cardMenu]);
+
+  const confirmHideVideo = useCallback(
+    async (v: VideoItem) => {
+      if (
+        !window.confirm(
+          `¿Ocultar «${v.title}» de la biblioteca? El archivo no se borra del disco.`,
+        )
+      ) {
+        return;
+      }
+      try {
+        await hideVideo(v.id, playbackOrigin(v.streamUrl) || null);
+        setCardMenu(null);
+        setItems((prev) => prev.filter((x) => x.id !== v.id));
+        if (urlVideoId === v.id) {
+          navigate("/", { replace: true });
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [navigate, urlVideoId],
+  );
+
+  const commitVideoEdit = useCallback(async () => {
+    const cur = videoEdit;
+    if (!cur) return;
+    const t = cur.draft.title.trim();
+    if (!t) return;
+    let year: number | null = null;
+    if (cur.draft.yearStr.trim() !== "") {
+      const y = Number.parseInt(cur.draft.yearStr, 10);
+      if (!Number.isFinite(y)) {
+        setError("Año inválido");
+        return;
+      }
+      year = y;
+    }
+    try {
+      const updated = await patchVideo(
+        cur.video.id,
+        {
+          title: t,
+          description: cur.draft.description,
+          genre: cur.draft.genre,
+          year,
+          seriesId: cur.draft.seriesId.trim() !== "" ? cur.draft.seriesId.trim() : null,
+        },
+        playbackOrigin(cur.video.streamUrl) || null,
+      );
+      setVideoEdit(null);
+      setItems((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+      setSelected((sel) => (sel?.id === updated.id ? updated : sel));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [videoEdit]);
+
+  useEffect(() => {
+    if (!videoEdit) {
+      setSeriesList([]);
+      return;
+    }
+    const origin = playbackOrigin(videoEdit.video.streamUrl);
+    let cancelled = false;
+    void listSeries(origin || null)
+      .then((list) => {
+        if (!cancelled) setSeriesList(list);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [videoEdit]);
+
+  useEffect(() => {
+    if (!seriesCreateOpen && !videoEdit) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      if (seriesCreateOpen) setSeriesCreateOpen(false);
+      else if (videoEdit) setVideoEdit(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [seriesCreateOpen, videoEdit]);
 
   useEffect(() => {
     if (!selected) return;
@@ -419,13 +605,24 @@ export default function App() {
         </main>
       ) : (
         <main className="dashboard">
-          {items.map((v) => (
+          {groupForDashboard(items).map((g) => (
+            <Fragment key={g.key}>
+              {g.label ? (
+                <div className="series-section-title" role="heading" aria-level={2}>
+                  {g.label}
+                </div>
+              ) : null}
+              {g.items.map((v) => (
             <div
               key={v.id}
               className={
                 "video-card video-card-ready" + (needsTranscodeCta(v) ? " video-card--incompat" : "")
               }
               style={{ position: "relative" }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setCardMenu({ x: e.clientX, y: e.clientY, video: v });
+              }}
             >
               <div
                 className="thumbnail"
@@ -538,6 +735,8 @@ export default function App() {
                 </div>
               </div>
             </div>
+              ))}
+            </Fragment>
           ))}
           {items.length === 0 && !loading && (
             <div
@@ -554,6 +753,343 @@ export default function App() {
           )}
         </main>
       )}
+      {cardMenu ? (
+        <div
+          ref={cardMenuRef}
+          className="card-context-menu"
+          style={{
+            left: Math.max(
+              8,
+              Math.min(cardMenu.x, window.innerWidth - 228),
+            ),
+            top: Math.max(
+              8,
+              Math.min(cardMenu.y, window.innerHeight - 140),
+            ),
+          }}
+          role="menu"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {(() => {
+            const v = cardMenu.video;
+            const tcBusy =
+              v.transcode?.status === "QUEUED" ||
+              v.transcode?.status === "RUNNING" ||
+              transcodingId === v.id;
+            const canTranscode = needsTranscodeCta(v) && !tcBusy;
+            return (
+              <>
+                <button
+                  type="button"
+                  className="card-context-menu__item"
+                  role="menuitem"
+                  onClick={() => {
+                    setVideoEdit({
+                      video: v,
+                      draft: {
+                        title: v.title,
+                        description: v.description ?? "",
+                        genre: v.genre ?? "",
+                        yearStr: v.year != null ? String(v.year) : "",
+                        seriesId: v.series?.id ?? "",
+                      },
+                    });
+                    setCardMenu(null);
+                  }}
+                >
+                  Editar
+                </button>
+                <button
+                  type="button"
+                  className="card-context-menu__item"
+                  role="menuitem"
+                  disabled={!canTranscode}
+                  title={
+                    !needsTranscodeCta(v)
+                      ? "Solo si el formato no es compatible con el navegador"
+                      : tcBusy
+                        ? "Transcodificación en curso"
+                        : undefined
+                  }
+                  onClick={() => {
+                    if (!canTranscode) return;
+                    setCardMenu(null);
+                    void startTranscode(v);
+                  }}
+                >
+                  Transcodificar
+                </button>
+                <button
+                  type="button"
+                  className="card-context-menu__item card-context-menu__item--danger"
+                  role="menuitem"
+                  onClick={() => void confirmHideVideo(v)}
+                >
+                  Eliminar
+                </button>
+              </>
+            );
+          })()}
+        </div>
+      ) : null}
+      {videoEdit ? (
+        <div
+          className="modal-overlay title-edit-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="video-edit-heading"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setVideoEdit(null);
+          }}
+        >
+          <div className="modal-content video-edit-modal">
+            <div className="modal-header" id="video-edit-heading">
+              Editar vídeo
+              <button
+                type="button"
+                className="btn-close"
+                aria-label="Cerrar"
+                onClick={() => setVideoEdit(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="modal-body video-edit-body">
+              <label className="video-edit-label">
+                Título
+                <input
+                  type="text"
+                  className="title-edit-input"
+                  value={videoEdit.draft.title}
+                  onChange={(e) =>
+                    setVideoEdit((cur) =>
+                      cur ? { ...cur, draft: { ...cur.draft, title: e.target.value } } : cur,
+                    )
+                  }
+                />
+              </label>
+              <label className="video-edit-label">
+                Descripción
+                <textarea
+                  className="video-edit-textarea"
+                  rows={3}
+                  value={videoEdit.draft.description}
+                  onChange={(e) =>
+                    setVideoEdit((cur) =>
+                      cur ? { ...cur, draft: { ...cur.draft, description: e.target.value } } : cur,
+                    )
+                  }
+                />
+              </label>
+              <div className="video-edit-row">
+                <label className="video-edit-label video-edit-label--half">
+                  Género
+                  <input
+                    type="text"
+                    className="title-edit-input"
+                    value={videoEdit.draft.genre}
+                    onChange={(e) =>
+                      setVideoEdit((cur) =>
+                        cur ? { ...cur, draft: { ...cur.draft, genre: e.target.value } } : cur,
+                      )
+                    }
+                  />
+                </label>
+                <label className="video-edit-label video-edit-label--half">
+                  Año
+                  <input
+                    type="text"
+                    className="title-edit-input"
+                    inputMode="numeric"
+                    placeholder="ej. 2024"
+                    value={videoEdit.draft.yearStr}
+                    onChange={(e) =>
+                      setVideoEdit((cur) =>
+                        cur ? { ...cur, draft: { ...cur.draft, yearStr: e.target.value } } : cur,
+                      )
+                    }
+                  />
+                </label>
+              </div>
+              <label className="video-edit-label">
+                Serie
+                <select
+                  className="video-edit-select"
+                  value={videoEdit.draft.seriesId}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val === "__new__") {
+                      setNewSeriesDraft({
+                        title: "",
+                        description: "",
+                        genre: "",
+                        yearStr: "",
+                        thumb: null,
+                      });
+                      setSeriesCreateOpen(true);
+                      return;
+                    }
+                    setVideoEdit((cur) =>
+                      cur ? { ...cur, draft: { ...cur.draft, seriesId: val } } : cur,
+                    );
+                  }}
+                >
+                  <option value="">Ninguna</option>
+                  {seriesList.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.title}
+                    </option>
+                  ))}
+                  <option value="__new__">+ Agregar nueva serie…</option>
+                </select>
+              </label>
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="btn-modal-secondary"
+                  onClick={() => setVideoEdit(null)}
+                >
+                  Cancelar
+                </button>
+                <button type="button" className="btn-primary" onClick={() => void commitVideoEdit()}>
+                  Guardar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {seriesCreateOpen && videoEdit ? (
+        <div
+          className="modal-overlay series-create-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="series-create-heading"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setSeriesCreateOpen(false);
+          }}
+        >
+          <div className="modal-content video-edit-modal">
+            <div className="modal-header" id="series-create-heading">
+              Nueva serie
+              <button
+                type="button"
+                className="btn-close"
+                aria-label="Cerrar"
+                onClick={() => setSeriesCreateOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="modal-body video-edit-body">
+              <label className="video-edit-label">
+                Título
+                <input
+                  type="text"
+                  className="title-edit-input"
+                  value={newSeriesDraft.title}
+                  onChange={(e) => setNewSeriesDraft((d) => ({ ...d, title: e.target.value }))}
+                />
+              </label>
+              <label className="video-edit-label">
+                Descripción
+                <textarea
+                  className="video-edit-textarea"
+                  rows={3}
+                  value={newSeriesDraft.description}
+                  onChange={(e) =>
+                    setNewSeriesDraft((d) => ({ ...d, description: e.target.value }))
+                  }
+                />
+              </label>
+              <div className="video-edit-row">
+                <label className="video-edit-label video-edit-label--half">
+                  Género
+                  <input
+                    type="text"
+                    className="title-edit-input"
+                    value={newSeriesDraft.genre}
+                    onChange={(e) => setNewSeriesDraft((d) => ({ ...d, genre: e.target.value }))}
+                  />
+                </label>
+                <label className="video-edit-label video-edit-label--half">
+                  Año
+                  <input
+                    type="text"
+                    className="title-edit-input"
+                    inputMode="numeric"
+                    value={newSeriesDraft.yearStr}
+                    onChange={(e) => setNewSeriesDraft((d) => ({ ...d, yearStr: e.target.value }))}
+                  />
+                </label>
+              </div>
+              <label className="video-edit-label">
+                Miniatura
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="video-edit-file"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    setNewSeriesDraft((d) => ({ ...d, thumb: f ?? null }));
+                  }}
+                />
+              </label>
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="btn-modal-secondary"
+                  onClick={() => setSeriesCreateOpen(false)}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() => {
+                    void (async () => {
+                      const t = newSeriesDraft.title.trim();
+                      if (!t) return;
+                      try {
+                        const fd = new FormData();
+                        fd.append("title", t);
+                        fd.append("description", newSeriesDraft.description.trim());
+                        fd.append("genre", newSeriesDraft.genre.trim());
+                        if (newSeriesDraft.yearStr.trim() !== "") {
+                          fd.append("year", newSeriesDraft.yearStr.trim());
+                        }
+                        if (newSeriesDraft.thumb) {
+                          fd.append("thumbnail", newSeriesDraft.thumb);
+                        }
+                        const origin = playbackOrigin(videoEdit.video.streamUrl);
+                        const created = await createSeries(fd, origin || null);
+                        setSeriesList((p) =>
+                          [...p, created].sort((a, b) => a.title.localeCompare(b.title, "es")),
+                        );
+                        setVideoEdit((ve) =>
+                          ve ? { ...ve, draft: { ...ve.draft, seriesId: created.id } } : ve,
+                        );
+                        setSeriesCreateOpen(false);
+                        setNewSeriesDraft({
+                          title: "",
+                          description: "",
+                          genre: "",
+                          yearStr: "",
+                          thumb: null,
+                        });
+                      } catch (err) {
+                        setError(err instanceof Error ? err.message : String(err));
+                      }
+                    })();
+                  }}
+                >
+                  Guardar serie
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

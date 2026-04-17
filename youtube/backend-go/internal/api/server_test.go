@@ -158,6 +158,63 @@ func TestPostThumbnailSetAtSeconds(t *testing.T) {
 	}
 }
 
+func TestPatchVideoTitleAndHide(t *testing.T) {
+	t.Parallel()
+	srv := newTestServerWithFFmpegClip(t)
+	ts := httptest.NewServer(srv.Router())
+	defer ts.Close()
+	id := "22222222-2222-2222-2222-222222222222%3A11111111-1111-1111-1111-111111111111"
+	patch, err := http.NewRequest(
+		http.MethodPatch,
+		ts.URL+"/api/videos/"+id,
+		strings.NewReader(`{"title":"Nuevo título","description":"","genre":"","year":null,"seriesId":null}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(res.Body)
+		t.Fatalf("patch status %d: %s", res.StatusCode, string(b))
+	}
+	var dto videoDTO
+	if err := json.NewDecoder(res.Body).Decode(&dto); err != nil {
+		t.Fatal(err)
+	}
+	if dto.Title != "Nuevo título" {
+		t.Fatalf("title: %q", dto.Title)
+	}
+	del, err := http.NewRequest(http.MethodDelete, ts.URL+"/api/videos/"+id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delRes, err := http.DefaultClient.Do(del)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer delRes.Body.Close()
+	if delRes.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status %d", delRes.StatusCode)
+	}
+	listRes, err := http.Get(ts.URL + "/api/videos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listRes.Body.Close()
+	var list []videoDTO
+	if err := json.NewDecoder(listRes.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("expected empty list after hide, got %d", len(list))
+	}
+}
+
 func TestPostThumbnailSetInvalidJSON(t *testing.T) {
 	t.Parallel()
 	srv := newTestServer(t)
