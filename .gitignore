@@ -1,24 +1,50 @@
-# Java
+# Java / Spring
 youtube/backend/target/
 # Fragmentos HLS si FFmpeg escribió por error en el cwd del backend
 youtube/backend/seg*.ts
 youtube/backend/segments/
 youtube/backend/index.m3u8
-
-youtube/backend/.idea/
 *.class
 *.jar
 *.war
-*.iml
 
-# Node
-youtube/frontend/node_modules/
-youtube/frontend/dist/
-*.local
+# Node (cualquier subproyecto: frontend, electron, etc.)
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Builds y caches (Vite, Vitest, etc.)
+dist/
+build/
+.cache/
+.turbo/
+coverage/
+*.tsbuildinfo
+
+# Go — binario y estado local del servicio lanflix
+/youtube/backend-go/lanflix
+/youtube/backend-go/lanflix.exe
+/youtube/backend-go/data/
+
+# Electron — empaquetado y salidas de builder
+youtube/electron/release/
+youtube/electron/out/
+
+# Medios de prueba locales (mantener solo el marcador si aplica)
+youtube/sample-media/*
+!youtube/sample-media/.gitkeep
+
+# IDE
+.idea/
+*.iml
 
 # OS
 .DS_Store
+Thumbs.db
+*~
 
 # Env
 .env
 .env.local
+*.local

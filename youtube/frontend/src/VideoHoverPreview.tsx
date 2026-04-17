@@ -8,6 +8,8 @@ type Props = {
   onCommitTime?: (seconds: number) => void;
   /** Mientras carga el preview por scrub; evita recuadro negro vacío. */
   posterUrl?: string | null;
+  /** Menú contextual abierto: sin desmontar (evita reiniciar HLS); solo pausa y bloquea punteros. */
+  interactionLocked?: boolean;
 };
 
 const PROBE_SEEK_MS = 100;
@@ -61,6 +63,7 @@ function attachManifest(
     video.addEventListener("canplay", onReady, { once: true });
     return () => {
       video.removeEventListener("canplay", onReady);
+      video.pause();
       video.removeAttribute("src");
       video.load();
     };
@@ -71,18 +74,24 @@ function attachManifest(
     video.addEventListener("canplay", onReady, { once: true });
     return () => {
       video.removeEventListener("canplay", onReady);
+      video.pause();
       video.removeAttribute("src");
       video.load();
     };
   }
 
-  const hls = new Hls({ enableWorker: true });
+  const hlsConfig: any = { enableWorker: true };
+  if (options.playOnReady && options.resumeAt > 0) {
+    hlsConfig.startPosition = options.resumeAt;
+  }
+  const hls = new Hls(hlsConfig);
   hls.loadSource(manifestUrl);
   hls.attachMedia(video);
   video.addEventListener("canplay", onReady, { once: true });
   return () => {
     video.removeEventListener("canplay", onReady);
     hls.destroy();
+    video.pause();
     video.removeAttribute("src");
     video.load();
   };
@@ -93,6 +102,7 @@ export function VideoHoverPreview({
   resumeAt = 0,
   onCommitTime,
   posterUrl,
+  interactionLocked = false,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const tipVideoRef = useRef<HTMLVideoElement>(null);
@@ -194,26 +204,8 @@ export function VideoHoverPreview({
       resumeAt,
     });
 
-    const target = resumeAt;
-    const tryResume = () => {
-      if (target > 0 && Number.isFinite(target)) {
-        applyResumeTime(main, target);
-      }
-    };
-    // HLS: el primer canplay a veces llega antes de que el seek sea estable; repetimos en metadatos/datos.
-    main.addEventListener("loadedmetadata", tryResume);
-    main.addEventListener("loadeddata", tryResume);
-    main.addEventListener("canplay", tryResume);
-    const delayed = window.setTimeout(tryResume, 200);
-    const delayed2 = window.setTimeout(tryResume, 650);
-
     return () => {
       clearTipThrottle();
-      window.clearTimeout(delayed);
-      window.clearTimeout(delayed2);
-      main.removeEventListener("loadedmetadata", tryResume);
-      main.removeEventListener("loadeddata", tryResume);
-      main.removeEventListener("canplay", tryResume);
       cleanMain();
     };
   }, [manifestUrl, resumeAt, clearTipThrottle]);
@@ -275,14 +267,13 @@ export function VideoHoverPreview({
     const main = videoRef.current;
     if (!main) return;
 
-    const commit = () => {
-      const t = main.currentTime;
-      if (Number.isFinite(t) && t >= 0) onCommitRef.current?.(t);
-    };
-
+    let lastKnownTime = resumeAt;
     let lastPeriodicCommit = 0;
     const sync = () => {
       const cur = readCurrent(main);
+      if (cur > 0) {
+        lastKnownTime = cur;
+      }
       const dur = readDuration(main);
       setProgress({ current: cur, duration: dur });
       const now = performance.now();
@@ -299,7 +290,9 @@ export function VideoHoverPreview({
     main.addEventListener("durationchange", sync);
     main.addEventListener("seeked", sync);
     return () => {
-      commit();
+      if (lastKnownTime >= 0) {
+        onCommitRef.current?.(lastKnownTime);
+      }
       main.removeEventListener("timeupdate", sync);
       main.removeEventListener("loadedmetadata", sync);
       main.removeEventListener("durationchange", sync);
@@ -327,11 +320,32 @@ export function VideoHoverPreview({
     };
   }, [scrubbing, seekTo, timeFromClientX, pointerInRail, clearTipThrottle]);
 
+  useEffect(() => {
+    const main = videoRef.current;
+    if (!main) return;
+    if (interactionLocked) {
+      main.pause();
+      const t = readCurrent(main);
+      if (Number.isFinite(t) && t >= 0) onCommitRef.current?.(t);
+      setTooltip(null);
+      clearTipThrottle();
+      setScrubbing(false);
+    } else {
+      void main.play().catch(() => {});
+    }
+  }, [interactionLocked, clearTipThrottle]);
+
   const { current, duration } = progress;
   const playedPct = duration > 0 ? (current / duration) * 100 : 0;
 
   return (
-    <div className="thumbnail-preview-wrap">
+    <div
+      className={
+        "thumbnail-preview-wrap" +
+        (interactionLocked ? " thumbnail-preview-wrap--locked" : "")
+      }
+      aria-hidden={interactionLocked || undefined}
+    >
       <video
         ref={videoRef}
         className="thumbnail-preview-video"

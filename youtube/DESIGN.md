@@ -1,17 +1,64 @@
 # Diseño del sistema (plataforma de video)
 
-Documento de arquitectura de la iteración en curso: describe cómo se suben objetos a un almacenamiento compatible con **S3**, cómo se guardan metadatos en **PostgreSQL**, cómo se transcodifica a **HLS** (HTTP Live Streaming) con **FFmpeg** en el mismo proceso que expone la **API**, y cómo el **frontend** tipo **SPA** se sirve con **nginx** en producción o con **Vite** en desarrollo.
+## Estado actual: LANflix (red local)
 
-En esta versión **no hay Redis**: la cola de trabajo es el propio estado en PostgreSQL más un planificador en Spring; la coordinación entre réplicas del API usa **ShedLock** sobre **JDBC** contra una tabla en Postgres, no un broker en memoria.
+Cada **nodo** es un binario **Go** (`backend-go/`) que indexa vídeos bajo **carpetas configurables** (`library_roots`), guarda metadatos en **SQLite** (`data/catalog.db`) y expone **REST** en `:8080`. La reproducción es **HTTP con `Accept-Ranges`** sobre el fichero (p. ej. MP4); no hay transcodificación obligatoria en el MVP.
+
+**Identidad:** `node_id` estable (UUID en `data/node-id`). Cada vídeo tiene UUID local; el API expone `id` compuesto `nodeId:videoId` y `streamUrl` absoluta al nodo que posee el fichero.
+
+**Federación:** cada nodo declara `peers` (URLs base de otros nodos). `GET /api/nodes?depth=N` devuelve este nodo más lo obtenido recursivamente de los peers (con límite de profundidad). `GET /api/videos?federated=true` en un nodo semilla hace *fan-out* a todos los nodos descubiertos y fusiona listas (deduplicando por `id`).
+
+**Frontend (web):** React + Vite. El usuario configura la **URL semilla** (p. ej. `http://192.168.1.10:8080`) en `localStorage`; las peticiones van a `{semilla}/api/...`. Opción **Federar red** activa el listado unificado.
+
+**Discovery automático (Electron + mDNS):**
+
+- El backend anuncia un servicio DNS-SD **`_lanflix._tcp`** en mDNS con TXT: `nodeId`, `name`, `version`.\n- La app **Electron** navega `_lanflix._tcp`, lista nodos detectados y permite elegir uno (setea la semilla automáticamente). El fallback manual (pegar URL) sigue disponible.\n- Para desactivar anuncio mDNS en el backend: `LANFLIX_MDNS=0`.
+
+```mermaid
+flowchart LR
+  browser([Navegador])
+  subgraph seed [Nodo semilla]
+    apiGo[API Go + SQLite]
+  end
+  subgraph others [Otros nodos LAN]
+    n2[Go]
+    n3[Go]
+  end
+  browser -->|HTTP| apiGo
+  apiGo -->|GET catalogo| n2
+  apiGo -->|GET catalogo| n3
+```
+
+```mermaid
+flowchart LR
+  electron[ElectronApp]
+  browserUi[ReactUI]
+  subgraph lan [LAN]
+    nodeA[LanflixNodeA]
+    nodeB[LanflixNodeB]
+  end
+  electron -->|"mDNS browse _lanflix._tcp"| nodeA
+  electron -->|"mDNS browse _lanflix._tcp"| nodeB
+  browserUi <-->|"IPC listNodes/onNodesChanged"| electron
+  browserUi -->|"HTTP {baseUrl}/api/videos?federated=true"| nodeA
+```
+
+**Docker Compose** (`docker-compose.yml`): servicios `api` (imagen Go) y `web` (nginx + estáticos). Volumen de datos `lanflix-data`; `./sample-media` montado como `/media` de solo lectura para pruebas.
+
+**Legado:** el directorio `backend/` (Spring Boot, PostgreSQL, MinIO, HLS, FFmpeg) conserva la iteración anterior; las secciones siguientes de este documento describen ese diseño y pueden desactualizarse respecto al código activo en `backend-go/` y el frontend actual.
 
 ---
 
-## 1. Vista de contexto
+## 1. Vista de contexto (iteración Spring + S3 — legado)
+
+Documento histórico: describe cómo se suben objetos a un almacenamiento compatible con **S3**, cómo se guardan metadatos en **PostgreSQL**, cómo se transcodifica a **HLS** (HTTP Live Streaming) con **FFmpeg** en el mismo proceso que expone la **API**, y cómo el **frontend** tipo **SPA** se sirve con **nginx** en producción o con **Vite** en desarrollo.
+
+En esta versión **no hay Redis**: la cola de trabajo es el propio estado en PostgreSQL más un planificador en Spring; la coordinación entre réplicas del API usa **ShedLock** sobre **JDBC** contra una tabla en Postgres, no un broker en memoria.
 
 ```mermaid
 flowchart LR
   usuario([Usuario])
-  subgraph app["Aplicación youtube/"]
+  subgraph app["Aplicación youtube/ legado"]
     web[Frontend\nReact + Vite + HLS.js]
     api[Backend\nSpring Boot]
   end

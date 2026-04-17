@@ -1,59 +1,44 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { matchPath, useLocation, useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
-  completeVideo,
-  createVideo,
+  getApiBase,
   getVideo,
-  getOriginalDownloadLink,
   listVideos,
-  uploadToPresigned,
-  deleteVideo,
-  updateVideoTitle,
+  requestTranscodeMp4,
+  setApiBase,
+  playbackOrigin,
   type VideoItem,
 } from "./api";
 import { VideoPlayer } from "./VideoPlayer";
-import { VideoHoverPreview } from "./VideoHoverPreview";
-import { formatFullUploadDateDetail, formatRelativeUploadDate } from "./formatUploadDate";
+import { formatRelativeUploadDate } from "./formatUploadDate";
 import { formatVideoDurationHms, formatViewsLine } from "./formatYoutubeStats";
-import { downloadFromUrl } from "./downloadFromUrl";
 import "./App.css";
+
+function parseWatchId(pathname: string): string | undefined {
+  const m = pathname.match(/^\/watch\/(.+)$/);
+  if (!m) return undefined;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return m[1];
+  }
+}
 
 export default function App() {
   const [items, setItems] = useState<VideoItem[]>([]);
   const [loading, setLoading] = useState(false);
-  const [uploadPercent, setUploadPercent] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  
-  // Modal state
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [title, setTitle] = useState("");
-  const [file, setFile] = useState<File | null>(null);
-  
+  const [federated, setFederated] = useState(true);
+  const [seedDraft, setSeedDraft] = useState("");
+  const [discovered, setDiscovered] = useState<DiscoveredNode[]>([]);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [selected, setSelected] = useState<VideoItem | null>(null);
-  const [hoverPreviewId, setHoverPreviewId] = useState<string | null>(null);
-  const [cardMenuOpenId, setCardMenuOpenId] = useState<string | null>(null);
-  const [editModalVideo, setEditModalVideo] = useState<VideoItem | null>(null);
-  const [editDraftTitle, setEditDraftTitle] = useState("");
-  const [editModalError, setEditModalError] = useState<string | null>(null);
-  const [editModalSaving, setEditModalSaving] = useState(false);
-  const [deleteModalVideo, setDeleteModalVideo] = useState<VideoItem | null>(null);
-  const [deleteModalError, setDeleteModalError] = useState<string | null>(null);
-  const [deleteModalDeleting, setDeleteModalDeleting] = useState(false);
-  const [downloadBusyId, setDownloadBusyId] = useState<string | null>(null);
-  const hoverPreviewTimeById = useRef<Map<string, number>>(new Map());
-  /** Reintentos de subida (mismo archivo) reutilizan el mismo CREATED en API. */
-  const uploadIdempotencyKeyRef = useRef<string | null>(null);
-  /** Subida en curso (para abortar al borrar el mismo video). */
-  const uploadSessionRef = useRef<{ videoId: string; abort: AbortController } | null>(null);
-  const fileInputId = useId();
-  const editTitleInputId = useId();
+  const [myViewerKey, setMyViewerKey] = useState("");
+  const [previewId, setPreviewId] = useState<string | null>(null);
+
   const location = useLocation();
   const navigate = useNavigate();
-  const urlVideoId =
-    matchPath({ path: "/watch/:videoId", end: true }, location.pathname)?.params.videoId ?? undefined;
-
-  // Generamos un ID de usuario descartable para esta sesión/navegador
-  const [myUploaderId, setMyUploaderId] = useState<string>("");
+  const urlVideoId = parseWatchId(location.pathname);
 
   useEffect(() => {
     let saved = localStorage.getItem("iol_uploader_id");
@@ -61,417 +46,400 @@ export default function App() {
       saved = "user_" + Math.random().toString(36).substring(2, 10);
       localStorage.setItem("iol_uploader_id", saved);
     }
-    setMyUploaderId(saved);
+    setMyViewerKey(saved);
   }, []);
 
-  const refresh = useCallback(async () => {
-    const list = await listVideos();
-    setItems(list);
-    setSelected((cur) => {
-      if (!cur) return cur;
-      const u = list.find((v) => v.id === cur.id);
-      return u ?? cur;
+  useEffect(() => {
+    setSeedDraft(getApiBase());
+  }, []);
+
+  const refreshDiscovery = useCallback(async () => {
+    if (!window.lanflix) return;
+    try {
+      setDiscoveryError(null);
+      const nodes = await window.lanflix.listNodes();
+      setDiscovered(nodes);
+      if (nodes.length > 0 && !getApiBase().trim()) {
+        setSeedDraft(nodes[0].baseUrl);
+        setApiBase(nodes[0].baseUrl);
+      }
+    } catch (e) {
+      setDiscoveryError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!window.lanflix) return;
+    const unsub = window.lanflix.onNodesChanged((nodes) => {
+      setDiscovered(nodes);
+      if (nodes.length > 0 && !getApiBase().trim()) {
+        setSeedDraft(nodes[0].baseUrl);
+        setApiBase(nodes[0].baseUrl);
+      }
     });
+    return () => unsub?.();
   }, []);
 
-  useEffect(() => {
-    refresh().catch((e) => console.error(e));
-  }, [refresh]);
+  const refresh = useCallback(
+    async (opts?: { silent?: boolean; retries?: number }) => {
+      const silent = opts?.silent ?? false;
+      const retries = Math.max(1, opts?.retries ?? 1);
+      if (!silent) {
+        setLoading(true);
+      }
+      setError(null);
+      let lastErr: unknown;
+      for (let attempt = 0; attempt < retries; attempt++) {
+        try {
+          const list = await listVideos({ federated });
+          setItems(list);
+          setSelected((cur) => {
+            if (!cur) return cur;
+            const u = list.find((v) => v.id === cur.id);
+            return u ?? cur;
+          });
+          if (!silent) setLoading(false);
+          return;
+        } catch (e) {
+          lastErr = e;
+          if (attempt < retries - 1) {
+            await new Promise((r) => setTimeout(r, 320 * (attempt + 1)));
+          }
+        }
+      }
+      if (!silent) {
+        setError(lastErr instanceof Error ? lastErr.message : String(lastErr));
+        setLoading(false);
+      }
+    },
+    [federated],
+  );
 
+  /** Primera carga: en Electron espera a semilla mDNS (o timeout) y reintenta el fetch. */
   useEffect(() => {
-    uploadIdempotencyKeyRef.current = null;
-  }, [file]);
+    let cancelled = false;
+    void (async () => {
+      if (window.lanflix) {
+        await refreshDiscovery();
+        if (cancelled) return;
+        if (!getApiBase().trim()) {
+          const deadline = Date.now() + 3200;
+          while (!cancelled && !getApiBase().trim() && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 100));
+          }
+        }
+      }
+      if (cancelled) return;
+      await refresh({ silent: false, retries: window.lanflix ? 4 : 1 });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [federated, refresh, refreshDiscovery]);
+
+  /** Refresco periódico sin spinner ni borrar el resto del estado. */
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void refresh({ silent: true, retries: 2 });
+    }, 45_000);
+    return () => window.clearInterval(id);
+  }, [refresh]);
 
   useEffect(() => {
     if (!urlVideoId) {
       setSelected(null);
       return;
     }
-    const fromList = items.find((v) => v.id === urlVideoId);
-    if (fromList) {
-      setSelected(fromList);
-      return;
-    }
     let cancelled = false;
-    void getVideo(urlVideoId)
-      .then((v) => {
+    void (async () => {
+      try {
+        const list = await listVideos({ federated });
         if (cancelled) return;
-        setSelected(v);
+        const fromList = list.find((v) => v.id === urlVideoId);
+        if (fromList) {
+          setSelected(fromList);
+          return;
+        }
+        const one = await getVideo(urlVideoId);
+        if (cancelled) return;
+        setSelected(one);
         setItems((prev) => {
-          if (prev.some((x) => x.id === v.id)) return prev.map((x) => (x.id === v.id ? v : x));
-          return [v, ...prev];
+          if (prev.some((x) => x.id === one.id)) return prev.map((x) => (x.id === one.id ? one : x));
+          return [one, ...prev];
         });
-      })
-      .catch(() => {
+      } catch {
         if (!cancelled) navigate("/", { replace: true });
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [urlVideoId, items, navigate]);
+  }, [urlVideoId, federated, navigate]);
 
   const viewKey = selected ? selected.id : "home";
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }, [viewKey]);
 
-  useEffect(() => {
-    if (!cardMenuOpenId) return;
-    const close = () => setCardMenuOpenId(null);
-    document.addEventListener("click", close);
-    return () => document.removeEventListener("click", close);
-  }, [cardMenuOpenId]);
-
   const patchViewCount = useCallback((id: string, viewCount: number) => {
     setItems((prev) => prev.map((x) => (x.id === id ? { ...x, viewCount } : x)));
     setSelected((cur) => (cur?.id === id ? { ...cur, viewCount } : cur));
   }, []);
 
+  const [transcodingId, setTranscodingId] = useState<string | null>(null);
+
+  const startTranscode = useCallback(
+    async (v: VideoItem) => {
+      if (!v.streamUrl) return;
+      setTranscodingId(v.id);
+      try {
+        const origin = playbackOrigin(v.streamUrl);
+        await requestTranscodeMp4(v.id, origin);
+        // Poll until READY/FAILED.
+        for (let i = 0; i < 240; i++) {
+          await new Promise((r) => setTimeout(r, 2000));
+          const updated = await getVideo(v.id);
+          setItems((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+          setSelected((cur) => (cur?.id === updated.id ? updated : cur));
+          const st = updated.transcode?.status;
+          if (st === "READY" || st === "FAILED") break;
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setTranscodingId(null);
+      }
+    },
+    [getVideo],
+  );
+
+  function saveSeed() {
+    setApiBase(seedDraft);
+    void refresh({ silent: false, retries: 3 });
+  }
+
+  function openWatch(v: VideoItem) {
+    navigate(`/watch/${encodeURIComponent(v.id)}`);
+  }
+
+  const closeWatch = useCallback(() => {
+    navigate("/", { replace: false });
+  }, [navigate]);
+
   useEffect(() => {
     if (!selected) return;
-    if (selected.status !== "UPLOADED" && selected.status !== "PROCESSING") return;
-    const id = window.setInterval(() => {
-      refresh().catch((e) => console.error(e));
-    }, 2000);
-    return () => window.clearInterval(id);
-  }, [selected?.id, selected?.status, refresh]);
-
-  async function handleUpload(e: React.FormEvent) {
-    e.preventDefault();
-    if (!file) return;
-    setError(null);
-    setLoading(true);
-    setUploadPercent(0);
-    try {
-      let idem = uploadIdempotencyKeyRef.current;
-      if (!idem) {
-        idem = crypto.randomUUID();
-        uploadIdempotencyKeyRef.current = idem;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeWatch();
       }
-      const created = await createVideo({
-        title: title.trim() || "Sin título",
-        originalFilename: file.name,
-        contentType: file.type || "application/octet-stream",
-        sizeBytes: file.size,
-        uploaderId: myUploaderId,
-        uploadIdempotencyKey: idem,
-      });
-      const ac = new AbortController();
-      uploadSessionRef.current = { videoId: created.id, abort: ac };
-      await uploadToPresigned(created.uploadUrl, file, created.method, (p) =>
-        setUploadPercent(p),
-        ac.signal,
-      );
-      await completeVideo(created.id);
-      uploadIdempotencyKeyRef.current = null;
-      await refresh();
-
-      setIsModalOpen(false); // Close on success
-      setTitle("");
-      setFile(null);
-
-      pollUntilDone(created.id);
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") {
-        uploadIdempotencyKeyRef.current = null;
-        await refresh().catch(() => {});
-      } else {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    } finally {
-      uploadSessionRef.current = null;
-      setLoading(false);
-      setUploadPercent(null);
-    }
-  }
-
-  async function pollUntilDone(id: string) {
-    const delay = 2000;
-    const max = 120;
-    for (let i = 0; i < max; i++) {
-      await new Promise((r) => setTimeout(r, delay));
-      const v = await getVideo(id);
-      await refresh();
-      if (v.status === "READY" || v.status === "FAILED") {
-        return;
-      }
-    }
-  }
-
-  async function handleDownloadOriginal(v: VideoItem) {
-    setCardMenuOpenId(null);
-    setDownloadBusyId(v.id);
-    try {
-      const { url, filename } = await getOriginalDownloadLink(v.id);
-      await downloadFromUrl(url, filename);
-    } catch (err) {
-      alert(err instanceof Error ? err.message : String(err));
-    } finally {
-      setDownloadBusyId(null);
-    }
-  }
-
-  function openEditModal(v: VideoItem) {
-    setEditModalVideo(v);
-    setEditDraftTitle(v.title);
-    setEditModalError(null);
-    setCardMenuOpenId(null);
-  }
-
-  function closeEditModal() {
-    setEditModalVideo(null);
-    setEditDraftTitle("");
-    setEditModalError(null);
-    setEditModalSaving(false);
-  }
-
-  async function submitEditTitle(e: React.FormEvent) {
-    e.preventDefault();
-    if (!editModalVideo) return;
-    const t = editDraftTitle.trim();
-    if (!t) {
-      setEditModalError("El título no puede estar vacío.");
-      return;
-    }
-    setEditModalSaving(true);
-    setEditModalError(null);
-    try {
-      const updated = await updateVideoTitle(editModalVideo.id, myUploaderId, t);
-      setItems((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
-      setSelected((cur) => (cur?.id === updated.id ? updated : cur));
-      closeEditModal();
-    } catch (err) {
-      setEditModalError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setEditModalSaving(false);
-    }
-  }
-
-  function openDeleteModal(v: VideoItem) {
-    setDeleteModalVideo(v);
-    setDeleteModalError(null);
-    setCardMenuOpenId(null);
-  }
-
-  function closeDeleteModal() {
-    setDeleteModalVideo(null);
-    setDeleteModalError(null);
-    setDeleteModalDeleting(false);
-  }
-
-  async function confirmDeleteVideo() {
-    if (!deleteModalVideo) return;
-    setDeleteModalDeleting(true);
-    setDeleteModalError(null);
-    try {
-      const sess = uploadSessionRef.current;
-      if (sess?.videoId === deleteModalVideo.id) {
-        sess.abort.abort();
-      }
-      await deleteVideo(deleteModalVideo.id, myUploaderId);
-      if (selected?.id === deleteModalVideo.id) {
-        navigate("/", { replace: true });
-      }
-      await refresh();
-      closeDeleteModal();
-    } catch (err) {
-      setDeleteModalError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setDeleteModalDeleting(false);
-    }
-  }
-
-  const openModal = () => {
-    setIsModalOpen(true);
-    setError(null);
-    setUploadPercent(null);
-  };
-  const closeModal = () => {
-    setIsModalOpen(false);
-    setTitle("");
-    setFile(null);
-    setError(null);
-    setUploadPercent(null);
-  };
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected, closeWatch]);
 
   return (
     <>
       <nav className="navbar">
         <div className="navbar-brand" onClick={() => navigate("/")}>
           <img className="navbar-logo" src="/favicon-32.png" alt="" width={28} height={28} />
-          IOL Video
+          LANflix
         </div>
-        <button className="btn-create" onClick={openModal}>
-          + Crear
-        </button>
+        <div className="navbar-seed" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <label style={{ color: "#aaa", fontSize: "0.85rem" }}>Nodo semilla</label>
+          <input
+            type="url"
+            placeholder="http://IP:8080 (vacío = mismo origen)"
+            value={seedDraft}
+            onChange={(e) => setSeedDraft(e.target.value)}
+            style={{
+              minWidth: 200,
+              maxWidth: 360,
+              padding: "6px 10px",
+              borderRadius: 6,
+              border: "1px solid #3a3a3a",
+              background: "#212121",
+              color: "#f1f1f1",
+            }}
+          />
+          <button type="button" className="btn-create" onClick={() => saveSeed()}>
+            Guardar
+          </button>
+          {window.lanflix ? (
+            <>
+              <button
+                type="button"
+                className="btn-modal-secondary"
+                onClick={() => void refreshDiscovery()}
+                disabled={loading}
+                title="Descubrir nodos LAN (mDNS)"
+              >
+                Descubrir
+              </button>
+              {discovered.length > 0 ? (
+                <select
+                  value={seedDraft}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setSeedDraft(v);
+                    setApiBase(v);
+                    void refresh({ silent: false, retries: 3 });
+                  }}
+                  aria-label="Nodos descubiertos"
+                  style={{
+                    maxWidth: 260,
+                    padding: "6px 10px",
+                    borderRadius: 6,
+                    background: "#272727",
+                    color: "#f1f1f1",
+                    border: "1px solid #3a3a3a",
+                  }}
+                >
+                  {discovered.map((n) => (
+                    <option key={n.nodeId} value={n.baseUrl}>
+                      {n.name} ({n.baseUrl})
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+            </>
+          ) : null}
+          <label style={{ color: "#aaa", fontSize: "0.85rem", display: "flex", alignItems: "center", gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={federated}
+              onChange={(e) => setFederated(e.target.checked)}
+            />
+            Federar red
+          </label>
+          <button
+            type="button"
+            className="btn-modal-secondary"
+            onClick={() => void refresh({ silent: false, retries: 3 })}
+            disabled={loading}
+          >
+            {loading ? "…" : "Actualizar"}
+          </button>
+        </div>
       </nav>
 
+      {error ? (
+        <p className="err" style={{ padding: "16px 24px", margin: 0 }}>
+          {error}
+        </p>
+      ) : null}
+      {discoveryError ? (
+        <p className="err" style={{ padding: "0 24px 16px", margin: 0 }}>
+          Discovery: {discoveryError}
+        </p>
+      ) : null}
+
       {selected ? (
-        <main className="player-container">
-          <div className="video-section">
-            <div className="video-wrapper">
-              {selected.status === "READY" && selected.manifestUrl ? (
-                <VideoPlayer
-                  manifestUrl={selected.manifestUrl}
-                  videoId={selected.id}
-                  viewerKey={myUploaderId}
-                  durationSeconds={selected.durationSeconds}
-                  onViewCountUpdated={(c) => patchViewCount(selected.id, c)}
-                />
-              ) : selected.status === "FAILED" ? (
-                <div style={{aspectRatio: "16/9", background: "#000", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "12px"}}>
-                  <span className="err">Error al procesar ({selected.errorMessage})</span>
-                </div>
-              ) : (
-                <div style={{aspectRatio: "16/9", background: "#000", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "12px"}}>
-                  <span style={{color: "#aaa"}}>
-                    {selected.status === "UPLOADED"
-                      ? "En cola"
-                      : selected.status === "PROCESSING"
-                        ? "Procesando"
-                        : selected.status === "CREATED"
-                          ? "Subiendo"
-                          : selected.status}
-                    …
-                    {selected.progressPercent != null
-                      ? ` ${selected.progressPercent}%`
-                      : ""}
+        <main className="watch-overlay" role="dialog" aria-label="Reproducción" aria-modal="true">
+          <div className="watch-topbar">
+            <button type="button" className="watch-back" onClick={() => closeWatch()} aria-label="Volver">
+              ←
+            </button>
+            <div className="watch-title">
+              <div className="watch-title-main">{selected.title}</div>
+              <div className="watch-title-sub">
+                {(selected.nodeName && selected.nodeName.trim() !== ""
+                  ? selected.nodeName
+                  : selected.nodeId.slice(0, 8) + "…")}
+              </div>
+            </div>
+            <div className="watch-topbar-right">
+              {selected.compat?.browserPlayable === false && selected.transcode?.status !== "READY" ? (
+                <>
+                  <span className="watch-warn">
+                    No compatible ({selected.compat.reason ?? "formato no soportado"})
                   </span>
-                </div>
-              )}
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    disabled={transcodingId === selected.id}
+                    onClick={() => void startTranscode(selected)}
+                  >
+                    {transcodingId === selected.id ? "Transcodificando…" : "Transcodificar a MP4"}
+                  </button>
+                </>
+              ) : null}
             </div>
-            <h1 className="player-title">{selected.title}</h1>
-            <p className="card-meta player-channel-row">
-              <span>IOL Channel</span>
-              <span className="verified-badge" title="Canal verificado" aria-hidden>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-                  <path
-                    d="M12 1L15 8h7l-5.5 4.2L19 22l-7-4.5L5 22l2.5-9.8L2 8h7L12 1z"
-                    fill="#3ea6ff"
-                  />
-                  <path
-                    d="M8.5 12.2l2.5 2.4 5-5"
-                    stroke="#0f0f0f"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </span>
-            </p>
-            <p className="card-meta player-stats-row">
-              {formatViewsLine(selected.viewCount ?? 0)} • {formatRelativeUploadDate(selected.createdAt)}
-            </p>
           </div>
-          <div className="related-section">
-            <h3 style={{marginTop: 0}}>Siguientes videos</h3>
-            <div className="related-list">
-              {items
-                .filter((v) => v.status === "READY" && v.id !== selected.id)
-                .map((v) => (
-                <div
-                  key={v.id}
-                  className="related-row related-row-ready"
-                  onClick={() => navigate(`/watch/${v.id}`)}
-                >
-                  <div className="related-thumb">
-                    {v.thumbnailUrl ? (
-                      <>
-                        <img
-                          src={v.thumbnailUrl}
-                          alt=""
-                          onError={(e) => {
-                            e.currentTarget.style.display = "none";
-                            const fb = e.currentTarget.nextElementSibling;
-                            if (fb) fb.classList.remove("is-hidden");
-                          }}
-                        />
-                        <span className="thumb-fallback is-hidden" aria-hidden>
-                          ▶
-                        </span>
-                      </>
-                    ) : (
-                      <span className="thumb-fallback" aria-hidden>
-                        ▶
-                      </span>
-                    )}
-                  </div>
-                  <div className="related-row-text">
-                    <h4
-                      style={{
-                        margin: "0 0 4px 0",
-                        fontSize: "0.9rem",
-                        display: "-webkit-box",
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: "vertical",
-                        overflow: "hidden",
-                      }}
-                    >
-                      {v.title}
-                    </h4>
-                  </div>
-                </div>
-              ))}
-            </div>
+          <div className="watch-player">
+            {selected.status === "READY" &&
+            (selected.transcode?.status === "READY" ? selected.transcode?.mp4Url : selected.streamUrl) ? (
+              <VideoPlayer
+                streamUrl={
+                  selected.transcode?.status === "READY" && selected.transcode?.mp4Url
+                    ? selected.transcode.mp4Url
+                    : selected.streamUrl
+                }
+                manifestUrl={selected.manifestUrl}
+                videoId={selected.id}
+                viewerKey={myViewerKey}
+                durationSeconds={selected.durationSeconds}
+                viewApiOrigin={playbackOrigin(selected.streamUrl)}
+                onViewCountUpdated={(c) => patchViewCount(selected.id, c)}
+                title={selected.title}
+                onBack={closeWatch}
+              />
+            ) : (
+              <div className="watch-placeholder">
+                <span className={selected.status === "FAILED" ? "err" : ""}>
+                  {selected.status === "FAILED" ? `Error (${selected.errorMessage})` : selected.status}
+                </span>
+              </div>
+            )}
           </div>
         </main>
       ) : (
         <main className="dashboard">
-          {items.map((v) => {
-            const isMine = v.uploaderId === myUploaderId;
-            return (
+          {items.map((v) => (
             <div
               key={v.id}
               className="video-card video-card-ready"
               style={{ position: "relative" }}
-              onMouseEnter={() => {
-                if (v.manifestUrl) setHoverPreviewId(v.id);
-              }}
-              onMouseLeave={() => setHoverPreviewId(null)}
             >
               <div
                 className="thumbnail"
-                onClick={() => {
-                  const openMenu = cardMenuOpenId;
-                  if (openMenu != null) {
-                    setCardMenuOpenId(null);
-                    if (openMenu === v.id) return;
-                  }
-                  navigate(`/watch/${v.id}`);
-                }}
+                onClick={() => openWatch(v)}
+                onMouseEnter={() => setPreviewId(v.id)}
+                onMouseLeave={() => setPreviewId((cur) => (cur === v.id ? null : cur))}
               >
-                {v.thumbnailUrl ? (
-                  <>
-                    <img
-                      src={v.thumbnailUrl}
-                      alt=""
-                      onError={(e) => {
-                        e.currentTarget.style.display = "none";
-                        const fb = e.currentTarget.nextElementSibling;
-                        if (fb) fb.classList.remove("is-hidden");
+                {previewId === v.id ? (
+                  <div className="thumbnail-preview-wrap">
+                    <video
+                      className="thumbnail-preview-video"
+                      muted
+                      playsInline
+                      preload="metadata"
+                      loop
+                      autoPlay
+                      src={
+                        v.transcode?.status === "READY" && v.transcode?.mp4Url
+                          ? v.transcode.mp4Url
+                          : v.streamUrl
+                      }
+                      onLoadedMetadata={(e) => {
+                        const el = e.currentTarget;
+                        try {
+                          el.currentTime = Math.min(3, Number.isFinite(el.duration) ? Math.max(0, el.duration - 0.25) : 3);
+                        } catch {
+                          // ignore
+                        }
+                      }}
+                      onCanPlay={(e) => {
+                        void e.currentTarget.play().catch(() => {});
                       }}
                     />
-                    <span className="thumb-fallback is-hidden" aria-hidden>
-                      ▶
-                    </span>
-                  </>
-                ) : (
-                  <span className="thumb-fallback" aria-hidden>
-                    ▶
-                  </span>
-                )}
-                {v.manifestUrl &&
-                hoverPreviewId === v.id &&
-                cardMenuOpenId !== v.id ? (
-                  <VideoHoverPreview
-                    manifestUrl={v.manifestUrl}
-                    posterUrl={v.thumbnailUrl}
-                    resumeAt={hoverPreviewTimeById.current.get(v.id) ?? 0}
-                    onCommitTime={(t) => {
-                      hoverPreviewTimeById.current.set(v.id, t);
-                    }}
-                  />
+                  </div>
                 ) : null}
+                {v.thumbnailUrl ? <img src={v.thumbnailUrl} alt="" loading="lazy" /> : null}
+                <span className={`thumb-fallback${v.thumbnailUrl ? " is-hidden" : ""}`} aria-hidden>
+                  ▶
+                </span>
                 {v.durationSeconds != null &&
                 Number.isFinite(v.durationSeconds) &&
                 v.durationSeconds > 0 ? (
@@ -479,107 +447,25 @@ export default function App() {
                 ) : null}
               </div>
               <div className="card-info">
-                <div className="avatar">I</div>
+                <div className="avatar">▶</div>
                 <div className="card-text">
                   <div className="card-title-row">
-                    <h3
-                      className="card-title"
-                      onClick={() => {
-                        const openMenu = cardMenuOpenId;
-                        if (openMenu != null) {
-                          setCardMenuOpenId(null);
-                          if (openMenu === v.id) return;
-                        }
-                        navigate(`/watch/${v.id}`);
-                      }}
-                    >
+                    <h3 className="card-title" onClick={() => openWatch(v)}>
                       {v.title}
                     </h3>
-                    <div className="card-more-wrap">
-                        <button
-                          type="button"
-                          className="card-more-btn"
-                          aria-label="Acciones del video"
-                          aria-expanded={cardMenuOpenId === v.id}
-                          aria-haspopup="menu"
-                          onPointerDown={(e) => e.stopPropagation()}
-                          onMouseDown={(e) => e.stopPropagation()}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setCardMenuOpenId((cur) => (cur === v.id ? null : v.id));
-                          }}
-                        >
-                          <svg
-                            className="card-more-dots"
-                            width="18"
-                            height="18"
-                            viewBox="0 0 24 24"
-                            fill="currentColor"
-                            aria-hidden
-                          >
-                            <circle cx="12" cy="6" r="1.75" />
-                            <circle cx="12" cy="12" r="1.75" />
-                            <circle cx="12" cy="18" r="1.75" />
-                          </svg>
-                        </button>
-                        {cardMenuOpenId === v.id ? (
-                          <div
-                            className="card-more-menu"
-                            role="menu"
-                            onPointerDown={(e) => e.stopPropagation()}
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <button
-                              type="button"
-                              className="card-more-menu-item"
-                              role="menuitem"
-                              disabled={downloadBusyId === v.id}
-                              onClick={() => void handleDownloadOriginal(v)}
-                            >
-                              {downloadBusyId === v.id ? "Descargando…" : "Descargar"}
-                            </button>
-                            {isMine ? (
-                              <>
-                                <button
-                                  type="button"
-                                  className="card-more-menu-item"
-                                  role="menuitem"
-                                  onClick={() => openEditModal(v)}
-                                >
-                                  Editar
-                                </button>
-                                <button
-                                  type="button"
-                                  className="card-more-menu-item card-more-menu-danger"
-                                  role="menuitem"
-                                  onClick={() => openDeleteModal(v)}
-                                >
-                                  Eliminar
-                                </button>
-                              </>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </div>
                   </div>
                   <p className="card-meta card-channel-row">
-                    <span>IOL Channel</span>
-                    <span className="verified-badge verified-badge-sm" title="Canal verificado" aria-hidden>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-                        <path
-                          d="M12 1L15 8h7l-5.5 4.2L19 22l-7-4.5L5 22l2.5-9.8L2 8h7L12 1z"
-                          fill="#aaa"
-                        />
-                        <path
-                          d="M8.5 12.2l2.5 2.4 5-5"
-                          stroke="#0f0f0f"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
+                    <span title={v.nodeName ?? v.nodeId}>
+                      {v.nodeName && v.nodeName.trim() !== ""
+                        ? v.nodeName
+                        : `Nodo ${v.nodeId.slice(0, 8)}…`}
                     </span>
+                    {v.compat?.browserPlayable === false &&
+                    v.transcode?.status !== "READY" ? (
+                      <span style={{ marginLeft: 8, color: "#f28b82" }} title={v.compat.reason ?? ""}>
+                        No compatible
+                      </span>
+                    ) : null}
                   </p>
                   <p className="card-meta card-views-row">
                     {`${formatViewsLine(v.viewCount ?? 0)} • ${formatRelativeUploadDate(v.createdAt)}`}
@@ -587,219 +473,21 @@ export default function App() {
                 </div>
               </div>
             </div>
-            );
-          })}
-          {items.length === 0 && (
-             <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: "40px", color: "#aaa", fontSize: "1.2rem" }}>
-                Aún no hay videos. ¡Sube el primero usando el botón Crear!
-             </div>
+          ))}
+          {items.length === 0 && !loading && (
+            <div
+              style={{
+                gridColumn: "1 / -1",
+                textAlign: "center",
+                padding: "40px",
+                color: "#aaa",
+                fontSize: "1.2rem",
+              }}
+            >
+              No hay videos indexados. Configurá las carpetas en el backend y pulsá Actualizar.
+            </div>
           )}
         </main>
-      )}
-
-      {editModalVideo && (
-        <div
-          className="modal-overlay"
-          role="presentation"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) closeEditModal();
-          }}
-        >
-          <div className="modal-content" role="dialog" aria-labelledby="edit-modal-title">
-            <div className="modal-header">
-              <span id="edit-modal-title">Editar video</span>
-              <button type="button" className="btn-close" onClick={closeEditModal} aria-label="Cerrar">
-                &times;
-              </button>
-            </div>
-            <div className="modal-body">
-              <form
-                onSubmit={(e) => void submitEditTitle(e)}
-                style={{
-                  width: "100%",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "16px",
-                  maxWidth: "480px",
-                }}
-              >
-                <div className="form-group">
-                  <label htmlFor={editTitleInputId}>Título del video</label>
-                  <input
-                    id={editTitleInputId}
-                    type="text"
-                    value={editDraftTitle}
-                    onChange={(e) => setEditDraftTitle(e.target.value)}
-                    disabled={editModalSaving}
-                    required
-                  />
-                </div>
-                {editModalError ? <p className="err">{editModalError}</p> : null}
-                <div className="modal-actions">
-                  <button
-                    type="button"
-                    className="btn-modal-secondary"
-                    onClick={closeEditModal}
-                    disabled={editModalSaving}
-                  >
-                    Cancelar
-                  </button>
-                  <button type="submit" className="btn-primary" disabled={editModalSaving}>
-                    {editModalSaving ? "Guardando…" : "Guardar"}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {deleteModalVideo && (
-        <div
-          className="modal-overlay"
-          role="presentation"
-          onClick={(e) => {
-            if (e.target === e.currentTarget && !deleteModalDeleting) closeDeleteModal();
-          }}
-        >
-          <div className="modal-content" role="dialog" aria-labelledby="delete-modal-title">
-            <div className="modal-header">
-              <span id="delete-modal-title">Eliminar video</span>
-              <button
-                type="button"
-                className="btn-close"
-                onClick={closeDeleteModal}
-                disabled={deleteModalDeleting}
-                aria-label="Cerrar"
-              >
-                &times;
-              </button>
-            </div>
-            <div className="modal-body">
-              <p className="modal-confirm-text">
-                ¿Eliminar permanentemente{" "}
-                <strong>{deleteModalVideo.title}</strong>? Esta acción no se puede deshacer.
-              </p>
-              {deleteModalVideo.status !== "READY" ? (
-                <p className="modal-confirm-text modal-confirm-sub">
-                  Si la subida sigue en curso en este navegador, se cancelará antes de borrar.
-                </p>
-              ) : null}
-              {deleteModalError ? <p className="err">{deleteModalError}</p> : null}
-              <div className="modal-actions">
-                <button
-                  type="button"
-                  className="btn-modal-secondary"
-                  onClick={closeDeleteModal}
-                  disabled={deleteModalDeleting}
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="button"
-                  className="btn-modal-danger"
-                  onClick={() => void confirmDeleteVideo()}
-                  disabled={deleteModalDeleting}
-                >
-                  {deleteModalDeleting ? "Eliminando…" : "Eliminar"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {isModalOpen && (
-        <div className="modal-overlay">
-          <div className="modal-content">
-            <div className="modal-header">
-              <span>Subir vídeos</span>
-              <button className="btn-close" onClick={closeModal}>&times;</button>
-            </div>
-            
-            <div className="modal-body">
-               <div className="upload-icon-circle">
-                 <img src="/icon-video-48.png" alt="" width={56} height={56} />
-               </div>
-               <div className="upload-text">
-                  <h3 style={{margin: "0 0 8px 0"}}>Arrastra y suelta archivos de video para subirlos</h3>
-                  <p>Tus videos se procesarán tras subirlos.</p>
-               </div>
-               
-               <form onSubmit={handleUpload} style={{width: "100%", display: "flex", flexDirection: "column", gap: "16px", maxWidth: "480px", marginTop: "12px"}}>
-                 <div className="form-group">
-                   <label>Título del video</label>
-                   <input
-                     type="text"
-                     placeholder="Añade un título"
-                     value={title}
-                     onChange={(e) => setTitle(e.target.value)}
-                     disabled={loading}
-                     required
-                   />
-                 </div>
-
-                 <div className="form-group">
-                   <span className="form-group-label">Archivo</span>
-                   <div className="file-input-wrap">
-                     <input
-                       id={fileInputId}
-                       className="file-input-native"
-                       type="file"
-                       accept="video/*"
-                       onChange={(e) => {
-                         const f = e.target.files?.[0] ?? null;
-                         setFile(f);
-                         if (f && !title) setTitle(f.name.split('.').slice(0, -1).join('.') || f.name);
-                       }}
-                       disabled={loading}
-                       required
-                     />
-                     <label htmlFor={fileInputId} className="file-input-trigger">
-                       Seleccionar archivo
-                     </label>
-                     <span className="file-input-filename" title={file?.name}>
-                       {file ? file.name : "Sin archivos seleccionados"}
-                     </span>
-                   </div>
-                 </div>
-
-                {error && <p className="err">{error}</p>}
-
-                {loading && uploadPercent != null ? (
-                  <div style={{ width: "100%", maxWidth: 480 }}>
-                    <div
-                      style={{
-                        height: 8,
-                        borderRadius: 4,
-                        background: "#333",
-                        overflow: "hidden",
-                      }}
-                    >
-                      <div
-                        style={{
-                          height: "100%",
-                          width: `${uploadPercent}%`,
-                          background: "#3ea6ff",
-                          transition: "width 0.15s ease",
-                        }}
-                      />
-                    </div>
-                    <p style={{ margin: "8px 0 0", textAlign: "center", color: "#aaa", fontSize: "0.9rem" }}>
-                      Subiendo… {uploadPercent}%
-                    </p>
-                  </div>
-                ) : null}
-
-                <div style={{display: "flex", justifyContent: "center", marginTop: "16px"}}>
-                  <button type="submit" disabled={loading || !file} className="btn-primary" style={{padding: "12px 32px", fontSize: "1rem"}}>
-                    {loading ? "Subiendo..." : "Seleccionar y Subir"}
-                  </button>
-                </div>
-               </form>
-            </div>
-          </div>
-        </div>
       )}
     </>
   );

@@ -1,57 +1,20 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: iol
-      POSTGRES_PASSWORD: iol
-      POSTGRES_DB: videodb
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U iol -d videodb"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - miniodata:/data
-
   api:
     build:
-      context: ./backend
+      context: ./backend-go
       dockerfile: Dockerfile
-    # Opcional: NVIDIA GPU para NVENC — requiere NVIDIA Container Toolkit, imagen con FFmpeg compilado con NVENC
-    # y p. ej. deploy.resources.reservations.devices (Compose v3) o --gpus all. Sin GPU, app.ffmpeg.hardware-accel=auto usa libx264.
     ports:
       - "8080:8080"
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/videodb
-      SPRING_DATASOURCE_USERNAME: iol
-      SPRING_DATASOURCE_PASSWORD: iol
-      MINIO_ENDPOINT: http://minio:9000
-      # Host/puerto alcanzable desde el navegador (presign PUT/GET); el nombre "minio" no resuelve fuera de la red Docker.
-      MINIO_PUBLIC_ENDPOINT: http://localhost:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
-      MINIO_BUCKET: videos
-      MINIO_REGION: us-east-1
-      APP_PLAYBACK_BASE_URL: http://localhost:8088/storage
-    depends_on:
-      postgres:
-        condition: service_healthy
-      minio:
-        condition: service_started
+      LANFLIX_LISTEN: ":8080"
+      LANFLIX_DATA_DIR: /data
+      LANFLIX_PUBLIC_BASE_URL: http://localhost:8080
+      LANFLIX_NODE_NAME: lanflix-docker
+      # Comma-separated peer base URLs (optional), e.g. http://192.168.1.20:8080
+      LANFLIX_PEERS: ""
+    volumes:
+      - lanflix-data:/data
+      - ./sample-media:/media:ro
 
   web:
     build:
@@ -62,35 +25,5 @@ services:
     depends_on:
       - api
 
-  prometheus:
-    image: prom/prometheus:v2.55.1
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.retention.time=15d
-      - --web.enable-lifecycle
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    depends_on:
-      - api
-
-  grafana:
-    image: grafana/grafana:11.3.1
-    ports:
-      - "3000:3000"
-    environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
-      GF_USERS_DEFAULT_THEME: dark
-      GF_SERVER_ROOT_URL: http://localhost:3000
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/iol-video-overview.json
-    volumes:
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/etc/grafana/dashboards:ro
-    depends_on:
-      - prometheus
-
 volumes:
-  pgdata:
-  miniodata:
+  lanflix-data:

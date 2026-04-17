@@ -1,37 +1,90 @@
-const API = "/api";
+const STORAGE_KEY = "lanflix_api_base";
+
+function envBase(): string {
+  const v = import.meta.env.VITE_API_BASE;
+  return typeof v === "string" ? v : "";
+}
+
+/** Base URL del nodo semilla (sin barra final), o vacío para mismo origen (`/api`). */
+export function getApiBase(): string {
+  if (typeof localStorage === "undefined") {
+    return envBase().replace(/\/$/, "");
+  }
+  const saved = localStorage.getItem(STORAGE_KEY);
+  const base = (saved ?? envBase() ?? "").trim();
+  return base.replace(/\/$/, "");
+}
+
+export function setApiBase(url: string): void {
+  const t = url.trim().replace(/\/$/, "");
+  if (!t) {
+    localStorage.removeItem(STORAGE_KEY);
+    return;
+  }
+  localStorage.setItem(STORAGE_KEY, t);
+}
+
+function apiPrefix(): string {
+  const b = getApiBase();
+  if (!b) return "/api";
+  return `${b}/api`;
+}
 
 export type VideoItem = {
   id: string;
+  nodeId: string;
+  nodeName?: string;
   title: string;
   status: string;
+  streamUrl: string;
   manifestUrl: string | null;
   thumbnailUrl: string | null;
   errorMessage: string | null;
   uploaderId: string | null;
   createdAt: string;
-  /** 0–100 en cola/proceso; null en CREATED/READY/FAILED */
   progressPercent: number | null;
   durationSeconds: number | null;
   viewCount: number;
+  source?: {
+    container: string;
+    videoCodec: string;
+    audioCodec: string;
+    pixFmt: string;
+  } | null;
+  compat?: {
+    browserPlayable: boolean;
+    reason?: string;
+  } | null;
+  transcode?: {
+    status: string;
+    error?: string;
+    mp4Url?: string | null;
+    progressPercent?: number | null;
+    queuePosition?: number | null;
+    outTimeMs?: number | null;
+  } | null;
 };
 
-export type CreateVideoBody = {
-  title: string;
-  originalFilename: string;
-  contentType: string;
-  sizeBytes: number;
-  uploaderId: string;
-  /** Mismo valor entre reintentos reutiliza el registro CREATED en backend. */
-  uploadIdempotencyKey?: string;
+export type TranscodeStatus = {
+  nodeId: string;
+  running: {
+    videoId: string;
+    progressPercent?: number;
+    outTimeMs?: number;
+  } | null;
+  queued: string[];
 };
 
-export type CreateVideoResult = {
-  id: string;
-  uploadUrl: string;
-  method: string;
-  objectKey: string;
-  expiresInSeconds: number;
-};
+export async function getTranscodeStatus(
+  apiOrigin?: string | null,
+): Promise<TranscodeStatus> {
+  const prefix =
+    apiOrigin != null && apiOrigin !== ""
+      ? `${apiOrigin.replace(/\/$/, "")}/api`
+      : apiPrefix();
+  const res = await fetch(`${prefix}/transcode/status`);
+  return parseJson<TranscodeStatus>(res);
+}
 
 async function parseJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -41,41 +94,52 @@ async function parseJson<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function createVideo(body: CreateVideoBody): Promise<CreateVideoResult> {
-  const res = await fetch(`${API}/videos`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  return parseJson<CreateVideoResult>(res);
-}
+export type ListVideosOptions = {
+  federated?: boolean;
+};
 
-export async function completeVideo(id: string): Promise<void> {
-  const res = await fetch(`${API}/videos/${id}/complete`, { method: "POST" });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error((err as { error?: string }).error ?? res.statusText);
-  }
+export async function listVideos(opts?: ListVideosOptions): Promise<VideoItem[]> {
+  const q =
+    opts?.federated === true ? "?federated=true" : "";
+  const res = await fetch(`${apiPrefix()}/videos${q}`);
+  const raw = await parseJson<VideoItem[]>(res);
+  return raw.map(normalizeVideo);
 }
 
 export async function getVideo(id: string): Promise<VideoItem> {
-  const res = await fetch(`${API}/videos/${id}`);
-  return parseJson<VideoItem>(res);
+  const enc = encodeURIComponent(id);
+  const res = await fetch(`${apiPrefix()}/videos/${enc}`);
+  return normalizeVideo(await parseJson<VideoItem>(res));
 }
 
-export async function listVideos(readyOnly?: boolean): Promise<VideoItem[]> {
-  const q =
-    readyOnly === true ? "?readyOnly=true" : "";
-  const res = await fetch(`${API}/videos${q}`);
-  return parseJson<VideoItem[]>(res);
+export async function requestTranscodeMp4(
+  id: string,
+  apiOrigin?: string | null,
+): Promise<{ status: string }> {
+  const enc = encodeURIComponent(id);
+  const prefix =
+    apiOrigin != null && apiOrigin !== ""
+      ? `${apiOrigin.replace(/\/$/, "")}/api`
+      : apiPrefix();
+  const res = await fetch(`${prefix}/videos/${enc}/transcode`, { method: "POST" });
+  if (res.status === 202) {
+    return parseJson<{ status: string }>(res);
+  }
+  return parseJson<{ status: string }>(res);
 }
 
 export async function recordView(
   id: string,
   viewerKey: string,
   watchedSeconds: number,
+  apiOrigin?: string | null,
 ): Promise<number> {
-  const res = await fetch(`${API}/videos/${id}/views`, {
+  const enc = encodeURIComponent(id);
+  const prefix =
+    apiOrigin != null && apiOrigin !== ""
+      ? `${apiOrigin.replace(/\/$/, "")}/api`
+      : apiPrefix();
+  const res = await fetch(`${prefix}/videos/${enc}/views`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ viewerKey, watchedSeconds }),
@@ -84,87 +148,34 @@ export async function recordView(
   return data.viewCount;
 }
 
-export function uploadToPresigned(
-  uploadUrl: string,
-  file: File,
-  method: string,
-  onProgress?: (percent: number) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    const detachAbort = () => {
-      if (signal) signal.removeEventListener("abort", onAbort);
-    };
-    const onAbort = () => {
-      xhr.abort();
-    };
-    if (signal) {
-      if (signal.aborted) {
-        reject(new DOMException("Aborted", "AbortError"));
-        return;
-      }
-      signal.addEventListener("abort", onAbort);
-    }
-    xhr.open(method || "PUT", uploadUrl);
-    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
-    xhr.upload.onprogress = (ev) => {
-      if (ev.lengthComputable && onProgress) {
-        onProgress(Math.round((100 * ev.loaded) / ev.total));
-      }
-    };
-    xhr.onload = () => {
-      detachAbort();
-      if (xhr.status >= 200 && xhr.status < 300) {
-        if (onProgress) onProgress(100);
-        resolve();
-      } else {
-        reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
-      }
-    };
-    xhr.onerror = () => {
-      detachAbort();
-      reject(new Error("Error de red al subir"));
-    };
-    xhr.onabort = () => {
-      detachAbort();
-      reject(new DOMException("Aborted", "AbortError"));
-    };
-    xhr.send(file);
-  });
+export type NodeInfo = {
+  nodeId: string;
+  baseUrl: string;
+  name: string;
+  version: string;
+};
+
+export async function listNodes(depth = 4): Promise<NodeInfo[]> {
+  const res = await fetch(`${apiPrefix()}/nodes?depth=${depth}`);
+  return parseJson<NodeInfo[]>(res);
 }
 
-export async function deleteVideo(id: string, uploaderId: string): Promise<void> {
-  const res = await fetch(`${API}/videos/${id}?uploaderId=${encodeURIComponent(uploaderId)}`, {
-    method: "DELETE",
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error((err as { error?: string }).error ?? res.statusText);
+function normalizeVideo(v: VideoItem): VideoItem {
+  return {
+    ...v,
+    viewCount: typeof v.viewCount === "number" ? v.viewCount : 0,
+    manifestUrl: v.manifestUrl ?? null,
+    streamUrl: v.streamUrl ?? "",
+    source: v.source ?? null,
+    compat: v.compat ?? null,
+    transcode: v.transcode ?? null,
+  };
+}
+
+export function playbackOrigin(streamUrl: string): string {
+  try {
+    return new URL(streamUrl).origin;
+  } catch {
+    return "";
   }
-}
-
-export async function updateVideoTitle(
-  id: string,
-  uploaderId: string,
-  title: string,
-): Promise<VideoItem> {
-  const res = await fetch(`${API}/videos/${id}?uploaderId=${encodeURIComponent(uploaderId)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title }),
-  });
-  return parseJson<VideoItem>(res);
-}
-
-export async function getOriginalDownloadLink(
-  id: string,
-  uploaderId?: string | null,
-): Promise<{ url: string; filename: string }> {
-  const q =
-    uploaderId != null && uploaderId !== ""
-      ? `?uploaderId=${encodeURIComponent(uploaderId)}`
-      : "";
-  const res = await fetch(`${API}/videos/${id}/original-download${q}`);
-  return parseJson<{ url: string; filename: string }>(res);
 }

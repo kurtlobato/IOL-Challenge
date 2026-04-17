@@ -1,0 +1,7 @@
+listen: :8080
+data_dir: ./data
+library_roots:
+    - /home/kurtdebiandell/Descargas
+peers: []
+public_base_url: ""
+node_name: Notebook Dell

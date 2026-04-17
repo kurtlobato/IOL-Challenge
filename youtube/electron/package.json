@@ -1,0 +1,45 @@
+{
+  "name": "lanflix-electron",
+  "private": true,
+  "version": "0.1.0",
+  "main": "dist/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "dev": "concurrently -k -n frontend,electron -c cyan,magenta \"npm --prefix ../frontend run dev\" \"wait-on http://127.0.0.1:5173 && cross-env ELECTRON_START_URL=http://127.0.0.1:5173 electron .\"",
+    "build:renderer": "npm --prefix ../frontend run build",
+    "build": "npm run build:renderer && tsc -p tsconfig.json",
+    "start": "electron .",
+    "dist": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "bonjour-service": "^1.2.1",
+    "sirv": "^3.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^34.2.0",
+    "electron-builder": "^24.13.3",
+    "typescript": "~5.7.2",
+    "wait-on": "^8.0.2"
+  },
+  "build": {
+    "appId": "com.iol.lanflix",
+    "productName": "LANflix",
+    "directories": {
+      "output": "release"
+    },
+    "files": ["dist/**", "../frontend/dist/**"],
+    "mac": {
+      "category": "public.app-category.video"
+    },
+    "win": {},
+    "linux": {
+      "target": [
+        "AppImage"
+      ]
+    }
+  }
+}
+
