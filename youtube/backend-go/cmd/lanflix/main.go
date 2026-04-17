@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -24,6 +25,13 @@ const version = "0.1.0"
 
 func main() {
 	log.SetFlags(0)
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("lanflix: panic en main: %v\n%s", r, debug.Stack())
+			os.Exit(2)
+		}
+	}()
+
 	cfg, err := config.Load(version)
 	if err != nil {
 		log.Fatal(err)
@@ -76,17 +84,32 @@ func main() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-ch
+		sig := <-ch
+		log.Printf("lanflix: señal recibida (%v), iniciando apagado…", sig)
 		cancel()
 		ctxShutdown, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancelShutdown()
-		_ = s.Shutdown(ctxShutdown)
+		if err := s.Shutdown(ctxShutdown); err != nil {
+			log.Printf("lanflix: Shutdown HTTP: %v", err)
+		}
 	}()
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("lanflix: panic en goroutine HTTP: %v\n%s", r, debug.Stack())
+				os.Exit(1)
+			}
+		}()
 		log.Printf("lanflix %s node=%s listen=%s", version, nid, cfg.Listen)
-		if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal(err)
+		err := s.ListenAndServe()
+		if err != nil {
+			if err == http.ErrServerClosed {
+				log.Printf("lanflix: servidor HTTP detenido (shutdown)")
+				return
+			}
+			log.Printf("lanflix: ListenAndServe: %v", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -148,4 +171,5 @@ func main() {
 
 	// If UI isn't enabled (no-op), keep process alive until shutdown.
 	<-ctx.Done()
+	log.Printf("lanflix: salida (contexto cancelado)")
 }

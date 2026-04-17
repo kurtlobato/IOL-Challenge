@@ -113,11 +113,12 @@ func newTestServerWithFFmpegClip(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{
-		Listen:       ":0",
-		NodeName:     "test",
-		Version:      "test",
-		LibraryRoots: []string{root},
-		Peers:        nil,
+		Listen:              ":0",
+		NodeName:            "test",
+		Version:             "test",
+		LibraryRoots:        []string{root},
+		Peers:               nil,
+		FFmpegHardwareAccel: "none",
 	}
 	return NewServer(cfg, "22222222-2222-2222-2222-222222222222", st, []string{root}, "http://127.0.0.1", dir)
 }
@@ -172,6 +173,19 @@ func TestPostThumbnailSetInvalidJSON(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", res.StatusCode)
+	}
+}
+
+func TestSortVideoDTOsByNewestFirst(t *testing.T) {
+	t.Parallel()
+	list := []videoDTO{
+		{ID: "b", CreatedAt: "2025-01-02T12:00:00Z"},
+		{ID: "z", CreatedAt: "2025-01-03T12:00:00Z"},
+		{ID: "a", CreatedAt: "2025-01-03T12:00:00Z"},
+	}
+	sortVideoDTOsByNewestFirst(list)
+	if list[0].ID != "a" || list[1].ID != "z" || list[2].ID != "b" {
+		t.Fatalf("order: %#v", list)
 	}
 }
 
@@ -304,11 +318,12 @@ func newTestServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{
-		Listen:       ":0",
-		NodeName:     "test",
-		Version:      "test",
-		LibraryRoots: []string{root},
-		Peers:        nil,
+		Listen:              ":0",
+		NodeName:            "test",
+		Version:             "test",
+		LibraryRoots:        []string{root},
+		Peers:               nil,
+		FFmpegHardwareAccel: "none",
 	}
 	return NewServer(cfg, "22222222-2222-2222-2222-222222222222", st, []string{root}, "http://127.0.0.1", dir)
 }

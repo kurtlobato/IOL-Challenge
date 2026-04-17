@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,20 +22,24 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/iol-challenge/youtube/backend-go/internal/config"
+	"github.com/iol-challenge/youtube/backend-go/internal/ffmpegcaps"
 	"github.com/iol-challenge/youtube/backend-go/internal/store"
 )
 
 // Server exposes REST API for one Lanflix node.
 type Server struct {
-	cfg    *config.Config
-	nodeID string
-	store  *store.Store
+	cfg     *config.Config
+	nodeID  string
+	store   *store.Store
 	rootsMu sync.RWMutex
 	roots   []string
-	pub    string // resolved public base URL (may be overridden per request)
-	client *http.Client
+	pub     string // resolved public base URL (may be overridden per request)
+	client  *http.Client
 
 	dataDir string
+
+	ffmpegBin         string
+	transcodeUseNVENC bool
 
 	transcodeQ chan string
 	tcMu       sync.Mutex
@@ -51,17 +58,27 @@ type Server struct {
 
 // NewServer builds the API handler.
 func NewServer(cfg *config.Config, nodeID string, st *store.Store, roots []string, publicBase string, dataDir string) *Server {
+	ffmpegBin := strings.TrimSpace(cfg.FFmpegCommand)
+	if ffmpegBin == "" {
+		ffmpegBin = "ffmpeg"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	useNV := ffmpegcaps.UseNVENC(ctx, ffmpegBin, cfg.FFmpegHardwareAccel)
+	cancel()
+
 	return &Server{
-		cfg:    cfg,
-		nodeID: nodeID,
-		store:  st,
-		roots:  roots,
-		pub:    strings.TrimRight(publicBase, "/"),
-		client: &http.Client{Timeout: 8 * time.Second},
-		dataDir: strings.TrimSpace(dataDir),
-		transcodeQ: make(chan string, 32),
-		tcState: map[string]string{},
-		thumbRunning: map[string]struct{}{},
+		cfg:               cfg,
+		nodeID:            nodeID,
+		store:             st,
+		roots:             roots,
+		pub:               strings.TrimRight(publicBase, "/"),
+		client:            &http.Client{Timeout: 8 * time.Second},
+		dataDir:           strings.TrimSpace(dataDir),
+		ffmpegBin:         ffmpegBin,
+		transcodeUseNVENC: useNV,
+		transcodeQ:        make(chan string, 32),
+		tcState:           map[string]string{},
+		thumbRunning:      map[string]struct{}{},
 	}
 }
 
@@ -113,11 +130,31 @@ func (s *Server) peerBaseURLs() []string {
 	return out
 }
 
+// httpPanicLogger registra pánico en handlers con el logger estándar (además de responder 500).
+func httpPanicLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				if rec == http.ErrAbortHandler {
+					panic(rec)
+				}
+				reqID := middleware.GetReqID(r.Context())
+				log.Printf("lanflix: panic request_id=%s %s %s: %v", reqID, r.Method, r.URL.Path, rec)
+				log.Printf("%s", debug.Stack())
+				if r.Header.Get("Connection") != "Upgrade" {
+					w.WriteHeader(http.StatusInternalServerError)
+				}
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-	r.Use(middleware.Recoverer)
+	r.Use(httpPanicLogger)
 	r.Use(corsMiddleware)
 
 	r.Get("/api/health", s.handleHealth)
@@ -244,10 +281,20 @@ func (s *Server) collectNodes(r *http.Request, depth int) ([]nodeDTO, error) {
 			byID[n.NodeID] = n
 		}
 	}
+	// Orden estable: el nodo local primero (coincide con el cliente que hace la petición), resto por nodeId.
 	out := make([]nodeDTO, 0, len(byID))
-	for _, n := range byID {
-		out = append(out, n)
+	out = append(out, self)
+	var rest []nodeDTO
+	for id, n := range byID {
+		if id == self.NodeID {
+			continue
+		}
+		rest = append(rest, n)
 	}
+	sort.Slice(rest, func(i, j int) bool {
+		return rest[i].NodeID < rest[j].NodeID
+	})
+	out = append(out, rest...)
 	return out, nil
 }
 
@@ -286,28 +333,28 @@ func (s *Server) fetchNodes(base string, depth int) ([]nodeDTO, error) {
 // --- videos ---
 
 type viewBody struct {
-	ViewerKey       string  `json:"viewerKey"`
-	WatchedSeconds  float64 `json:"watchedSeconds"`
+	ViewerKey      string  `json:"viewerKey"`
+	WatchedSeconds float64 `json:"watchedSeconds"`
 }
 
 type videoDTO struct {
-	ID               string   `json:"id"`
-	NodeID           string   `json:"nodeId"`
-	NodeName         string   `json:"nodeName"`
-	Title            string   `json:"title"`
-	Status           string   `json:"status"`
-	StreamURL        string   `json:"streamUrl"`
-	ManifestURL      *string  `json:"manifestUrl"`
-	ThumbnailURL     *string  `json:"thumbnailUrl"`
-	ErrorMessage     *string  `json:"errorMessage"`
-	UploaderID       *string  `json:"uploaderId"`
-	CreatedAt        string   `json:"createdAt"`
-	ProgressPercent  *int     `json:"progressPercent"`
-	DurationSeconds  *float64 `json:"durationSeconds"`
-	ViewCount        int64    `json:"viewCount"`
-	Source           *sourceDTO `json:"source,omitempty"`
-	Compat           *compatDTO `json:"compat,omitempty"`
-	Transcode        *transcodeDTO `json:"transcode,omitempty"`
+	ID              string        `json:"id"`
+	NodeID          string        `json:"nodeId"`
+	NodeName        string        `json:"nodeName"`
+	Title           string        `json:"title"`
+	Status          string        `json:"status"`
+	StreamURL       string        `json:"streamUrl"`
+	ManifestURL     *string       `json:"manifestUrl"`
+	ThumbnailURL    *string       `json:"thumbnailUrl"`
+	ErrorMessage    *string       `json:"errorMessage"`
+	UploaderID      *string       `json:"uploaderId"`
+	CreatedAt       string        `json:"createdAt"`
+	ProgressPercent *int          `json:"progressPercent"`
+	DurationSeconds *float64      `json:"durationSeconds"`
+	ViewCount       int64         `json:"viewCount"`
+	Source          *sourceDTO    `json:"source,omitempty"`
+	Compat          *compatDTO    `json:"compat,omitempty"`
+	Transcode       *transcodeDTO `json:"transcode,omitempty"`
 }
 
 type sourceDTO struct {
@@ -323,12 +370,12 @@ type compatDTO struct {
 }
 
 type transcodeDTO struct {
-	Status            string   `json:"status"`
-	Error             string   `json:"error,omitempty"`
-	Mp4URL            *string  `json:"mp4Url,omitempty"`
-	ProgressPercent   *float64 `json:"progressPercent,omitempty"`
-	QueuePosition     *int     `json:"queuePosition,omitempty"`
-	OutTimeMs         *int64   `json:"outTimeMs,omitempty"`
+	Status          string   `json:"status"`
+	Error           string   `json:"error,omitempty"`
+	Mp4URL          *string  `json:"mp4Url,omitempty"`
+	ProgressPercent *float64 `json:"progressPercent,omitempty"`
+	QueuePosition   *int     `json:"queuePosition,omitempty"`
+	OutTimeMs       *int64   `json:"outTimeMs,omitempty"`
 }
 
 func (s *Server) handleListVideos(w http.ResponseWriter, r *http.Request) {
@@ -391,7 +438,23 @@ func (s *Server) handleListFederated(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	}
+	sortVideoDTOsByNewestFirst(merged)
 	writeJSON(w, merged)
+}
+
+// sortVideoDTOsByNewestFirst ordena como ListVideos local (más reciente primero), desempate por id.
+func sortVideoDTOsByNewestFirst(list []videoDTO) {
+	sort.Slice(list, func(i, j int) bool {
+		ti, err1 := time.Parse(time.RFC3339, list[i].CreatedAt)
+		tj, err2 := time.Parse(time.RFC3339, list[j].CreatedAt)
+		if err1 != nil || err2 != nil {
+			return list[i].ID < list[j].ID
+		}
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		return list[i].ID < list[j].ID
+	})
 }
 
 func (s *Server) toVideoDTO(ctx context.Context, v store.Video, publicBase, nid string) (videoDTO, error) {

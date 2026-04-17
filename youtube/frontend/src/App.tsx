@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   getApiBase,
@@ -9,7 +9,6 @@ import {
   playbackOrigin,
   type VideoItem,
 } from "./api";
-import { VideoHoverPreview } from "./VideoHoverPreview";
 import { VideoPlayer } from "./VideoPlayer";
 import { formatRelativeUploadDate } from "./formatUploadDate";
 import { formatVideoDurationHms, formatViewsLine } from "./formatYoutubeStats";
@@ -23,6 +22,29 @@ function parseWatchId(pathname: string): string | undefined {
   } catch {
     return m[1];
   }
+}
+
+function needsTranscodeCta(v: VideoItem): boolean {
+  return v.compat?.browserPlayable === false && v.transcode?.status !== "READY";
+}
+
+function transcodeOverlayAlwaysVisible(v: VideoItem, activeTranscodeId: string | null): boolean {
+  if (v.transcode?.status === "QUEUED" || v.transcode?.status === "RUNNING") return true;
+  if (activeTranscodeId === v.id) return true;
+  return false;
+}
+
+function transcodeOverlayLabel(v: VideoItem, activeTranscodeId: string | null): string {
+  if (v.transcode?.status === "RUNNING") return "Transcodificando…";
+  if (v.transcode?.status === "QUEUED") return "En espera para transcodificación";
+  if (activeTranscodeId === v.id) return "En espera para transcodificación";
+  return "Transcodificar";
+}
+
+function canHoverPreviewVideo(v: VideoItem): boolean {
+  if (v.transcode?.status === "READY" && v.transcode?.mp4Url) return true;
+  if (v.compat?.browserPlayable === false) return false;
+  return Boolean(v.streamUrl);
 }
 
 export default function App() {
@@ -400,7 +422,9 @@ export default function App() {
           {items.map((v) => (
             <div
               key={v.id}
-              className="video-card video-card-ready"
+              className={
+                "video-card video-card-ready" + (needsTranscodeCta(v) ? " video-card--incompat" : "")
+              }
               style={{ position: "relative" }}
             >
               <div
@@ -409,35 +433,36 @@ export default function App() {
                 onMouseEnter={() => setPreviewId(v.id)}
                 onMouseLeave={() => setPreviewId((cur) => (cur === v.id ? null : cur))}
               >
-                {previewId === v.id &&
-                ((v.transcode?.status === "READY" && v.transcode?.mp4Url) || v.streamUrl) ? (
-                  <VideoHoverPreview
-                    key={v.id}
-                    manifestUrl={v.manifestUrl}
-                    progressiveUrl={
-                      v.transcode?.status === "READY" && v.transcode?.mp4Url
-                        ? v.transcode.mp4Url
-                        : v.streamUrl || null
-                    }
-                    resumeAt={3}
-                    posterUrl={v.thumbnailUrl}
-                    videoId={v.id}
-                    thumbnailApiOrigin={v.streamUrl ? playbackOrigin(v.streamUrl) : undefined}
-                    onThumbnailUpdated={async () => {
-                      await refresh({ silent: true });
-                      setItems((prev) =>
-                        prev.map((x) =>
-                          x.id === v.id && x.thumbnailUrl
-                            ? {
-                                ...x,
-                                thumbnailUrl: `${String(x.thumbnailUrl).split("?")[0]}?v=${Date.now()}`,
-                              }
-                            : x,
-                        ),
-                      );
-                    }}
-                    onThumbnailError={(m) => setError(m)}
-                  />
+                {previewId === v.id && canHoverPreviewVideo(v) ? (
+                  <div className="thumbnail-preview-wrap">
+                    <video
+                      className="thumbnail-preview-video"
+                      muted
+                      playsInline
+                      preload="metadata"
+                      loop
+                      autoPlay
+                      src={
+                        v.transcode?.status === "READY" && v.transcode?.mp4Url
+                          ? v.transcode.mp4Url
+                          : v.streamUrl
+                      }
+                      onLoadedMetadata={(e) => {
+                        const el = e.currentTarget;
+                        try {
+                          el.currentTime = Math.min(
+                            3,
+                            Number.isFinite(el.duration) ? Math.max(0, el.duration - 0.25) : 3,
+                          );
+                        } catch {
+                          // ignore
+                        }
+                      }}
+                      onCanPlay={(e) => {
+                        void e.currentTarget.play().catch(() => {});
+                      }}
+                    />
+                  </div>
                 ) : null}
                 {v.thumbnailUrl ? <img src={v.thumbnailUrl} alt="" loading="lazy" /> : null}
                 <span className={`thumb-fallback${v.thumbnailUrl ? " is-hidden" : ""}`} aria-hidden>
@@ -447,6 +472,43 @@ export default function App() {
                 Number.isFinite(v.durationSeconds) &&
                 v.durationSeconds > 0 ? (
                   <span className="thumb-duration">{formatVideoDurationHms(v.durationSeconds)}</span>
+                ) : null}
+                {needsTranscodeCta(v) ? (
+                  <div
+                    className={
+                      "card-transcode-overlay" +
+                      (transcodeOverlayAlwaysVisible(v, transcodingId)
+                        ? " card-transcode-overlay--forced"
+                        : "") +
+                      (v.transcode?.status === "QUEUED" ||
+                      v.transcode?.status === "RUNNING" ||
+                      transcodingId === v.id
+                        ? " card-transcode-overlay--busy"
+                        : "")
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      const st = v.transcode?.status;
+                      if (st === "QUEUED" || st === "RUNNING") return;
+                      void startTranscode(v);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter" && e.key !== " ") return;
+                      e.stopPropagation();
+                      e.preventDefault();
+                      const st = v.transcode?.status;
+                      if (st === "QUEUED" || st === "RUNNING") return;
+                      void startTranscode(v);
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={transcodeOverlayLabel(v, transcodingId)}
+                  >
+                    <span className="card-transcode-overlay-text">
+                      {transcodeOverlayLabel(v, transcodingId)}
+                    </span>
+                  </div>
                 ) : null}
               </div>
               <div className="card-info">

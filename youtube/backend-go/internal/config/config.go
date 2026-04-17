@@ -13,13 +13,15 @@ import (
 
 // Config describes one Lanflix node (library roots, listen address, peers).
 type Config struct {
-	Listen         string   `yaml:"listen"`
-	DataDir        string   `yaml:"data_dir"`
-	LibraryRoots   []string `yaml:"library_roots"`
-	Peers          []string `yaml:"peers"`
-	PublicBaseURL  string   `yaml:"public_base_url"`
-	NodeName       string   `yaml:"node_name"`
-	Version        string   `yaml:"-"`
+	Listen              string   `yaml:"listen"`
+	DataDir             string   `yaml:"data_dir"`
+	LibraryRoots        []string `yaml:"library_roots"`
+	Peers               []string `yaml:"peers"`
+	PublicBaseURL       string   `yaml:"public_base_url"`
+	NodeName            string   `yaml:"node_name"`
+	FFmpegCommand       string   `yaml:"ffmpeg_command"`
+	FFmpegHardwareAccel string   `yaml:"ffmpeg_hardware_accel"` // auto | none | nvenc (NVIDIA NVENC si está disponible)
+	Version             string   `yaml:"-"`
 }
 
 // Load reads YAML from path or LANFLIX_CONFIG, with env overrides.
@@ -76,6 +78,12 @@ func Load(version string) (*Config, error) {
 			}
 		}
 		cfg.Peers = peers
+	}
+	if v := os.Getenv("LANFLIX_FFMPEG_COMMAND"); v != "" {
+		cfg.FFmpegCommand = v
+	}
+	if v := os.Getenv("LANFLIX_FFMPEG_HARDWARE_ACCEL"); v != "" {
+		cfg.FFmpegHardwareAccel = v
 	}
 	return cfg, nil
 }

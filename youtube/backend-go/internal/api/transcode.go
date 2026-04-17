@@ -19,6 +19,37 @@ import (
 	"github.com/iol-challenge/youtube/backend-go/internal/store"
 )
 
+func (s *Server) transcodeFFmpegArgs(inPath, tmp string) []string {
+	base := []string{
+		"-hide_banner",
+		"-loglevel", "error",
+		"-y",
+		"-progress", "pipe:1",
+		"-nostats",
+		"-i", inPath,
+	}
+	var v []string
+	if s.transcodeUseNVENC {
+		v = []string{
+			"-c:v", "h264_nvenc",
+			"-pix_fmt", "yuv420p",
+			"-preset", "p4",
+			"-tune", "hq",
+			"-rc", "vbr",
+			"-cq", "22",
+		}
+	} else {
+		v = []string{
+			"-c:v", "libx264",
+			"-pix_fmt", "yuv420p",
+			"-preset", "veryfast",
+			"-crf", "22",
+		}
+	}
+	out := append(append(append([]string{}, base...), v...), "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", tmp)
+	return out
+}
+
 func (s *Server) handlePostTranscode(w http.ResponseWriter, r *http.Request) {
 	id := readVideoIDParam(r)
 	nid, vid, composite := parseCompositeID(id)
@@ -179,15 +210,15 @@ func (s *Server) dequeueTranscodeJob(vid string) {
 }
 
 type transcodeStatusDTO struct {
-	NodeID  string                 `json:"nodeId"`
-	Running *transcodeRunningDTO   `json:"running"`
-	Queued  []string               `json:"queued"`
+	NodeID  string               `json:"nodeId"`
+	Running *transcodeRunningDTO `json:"running"`
+	Queued  []string             `json:"queued"`
 }
 
 type transcodeRunningDTO struct {
-	VideoID          string   `json:"videoId"`
-	ProgressPercent  *float64 `json:"progressPercent,omitempty"`
-	OutTimeMs        *int64   `json:"outTimeMs,omitempty"`
+	VideoID         string   `json:"videoId"`
+	ProgressPercent *float64 `json:"progressPercent,omitempty"`
+	OutTimeMs       *int64   `json:"outTimeMs,omitempty"`
 }
 
 func (s *Server) handleGetTranscodeStatus(w http.ResponseWriter, r *http.Request) {
@@ -246,22 +277,7 @@ func (s *Server) runTranscode(ctx context.Context, videoID string) error {
 		durMs = int64(*v.DurationSeconds * 1000.0)
 	}
 
-	cmd := exec.CommandContext(ctx, "ffmpeg",
-		"-hide_banner",
-		"-loglevel", "error",
-		"-y",
-		"-progress", "pipe:1",
-		"-nostats",
-		"-i", inPath,
-		"-c:v", "libx264",
-		"-pix_fmt", "yuv420p",
-		"-preset", "veryfast",
-		"-crf", "22",
-		"-c:a", "aac",
-		"-b:a", "160k",
-		"-movflags", "+faststart",
-		tmp,
-	)
+	cmd := exec.CommandContext(ctx, s.ffmpegBin, s.transcodeFFmpegArgs(inPath, tmp)...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -435,4 +451,3 @@ func (s *Server) ensureMediaInfo(ctx context.Context, videoID string, v store.Vi
 		UpdatedAt:  time.Now().UTC(),
 	})
 }
-

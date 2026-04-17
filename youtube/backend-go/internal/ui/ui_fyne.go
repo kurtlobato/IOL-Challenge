@@ -4,8 +4,10 @@ package ui
 
 import (
 	"context"
+	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -190,6 +192,11 @@ func Start(ctx context.Context, configPath string, cfg *config.Config, st *store
 	}()
 
 	w.Show()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("lanflix: panic en Fyne (a.Run): %v\n%s", r, debug.Stack())
+		}
+	}()
 	a.Run()
 	return nil
 }

@@ -140,16 +140,7 @@ body {
   position: absolute;
   inset: 0;
   z-index: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
   pointer-events: none;
-}
-
-.thumbnail-preview-wrap--locked {
-  opacity: 0;
-  pointer-events: none !important;
-  transition: opacity 0.12s ease;
 }
 
 .thumbnail-preview-video {
@@ -162,186 +153,42 @@ body {
   z-index: 1;
 }
 
-.thumb-preview-progress {
-  position: relative;
-  z-index: 2;
-  padding: 0 6px 4px;
-  pointer-events: auto;
-}
-
-.thumb-preview-rail {
-  position: relative;
-  min-height: 28px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-}
-
-.thumb-preview-rail-track {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 50%;
-  height: 3px;
-  margin-top: -1.5px;
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.25);
-  pointer-events: none;
-  transition: height 0.15s ease, margin-top 0.15s ease;
-}
-
-.thumb-preview-rail:hover .thumb-preview-rail-track {
-  height: 5px;
-  margin-top: -2.5px;
-}
-
-.thumb-preview-rail-played {
-  position: absolute;
-  left: 0;
-  top: 50%;
-  height: 3px;
-  margin-top: -1.5px;
-  border-radius: 2px;
-  background: #e50914;
-  pointer-events: none;
-  transition: height 0.15s ease, margin-top 0.15s ease;
-}
-
-.thumb-preview-rail:hover .thumb-preview-rail-played {
-  height: 5px;
-  margin-top: -2.5px;
-}
-
-.thumb-preview-rail-handle {
-  position: absolute;
-  top: 50%;
-  width: 12px;
-  height: 12px;
-  margin-left: -6px;
-  margin-top: -6px;
-  border-radius: 50%;
-  background: #e50914;
-  box-shadow: 0 0 0 2px rgba(229, 9, 20, 0.35);
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-
-.thumb-preview-rail:hover .thumb-preview-rail-handle {
-  opacity: 1;
-}
-
-.thumb-preview-tooltip-stack {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  transform: translateX(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  pointer-events: none;
-}
-
-.thumb-preview-frame-wrap {
-  position: relative;
-  width: 160px;
-  height: 90px;
-  border-radius: 4px;
-  overflow: hidden;
-  background: #141414;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.7);
-}
-
-.thumb-preview-loader {
+.card-transcode-overlay {
   position: absolute;
   inset: 0;
-  z-index: 3;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(20, 20, 20, 0.92);
-}
-
-.thumb-preview-spinner {
-  width: 28px;
-  height: 28px;
-  border: 3px solid rgba(255, 255, 255, 0.15);
-  border-top-color: #e50914;
-  border-radius: 50%;
-  animation: thumb-preview-spin 0.65s linear infinite;
-}
-
-@keyframes thumb-preview-spin {
-  to { transform: rotate(360deg); }
-}
-
-.thumb-preview-poster {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  z-index: 0;
-}
-
-.thumb-preview-frame-video {
-  position: relative;
-  display: block;
-  width: 160px;
-  height: 90px;
-  object-fit: cover;
-  z-index: 1;
-  background: transparent;
-}
-
-.thumb-preview-frame-video--hidden {
+  padding: 8px;
+  box-sizing: border-box;
+  background: rgba(0, 0, 0, 0.58);
   opacity: 0;
+  transition: opacity 0.18s ease;
+  pointer-events: none;
 }
 
-.thumb-preview-tooltip-label {
-  padding: 3px 8px;
-  border-radius: 3px;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.2;
-  color: #fff;
-  background: rgba(20, 20, 20, 0.95);
-  white-space: nowrap;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
-}
-
-.thumb-preview-context-menu {
-  position: fixed;
-  z-index: 200;
-  min-width: 180px;
-  padding: 4px 0;
-  margin: 0;
-  border-radius: 4px;
-  background: #2a2a2a;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+.video-card--incompat .thumbnail:hover .card-transcode-overlay {
+  opacity: 1;
   pointer-events: auto;
 }
 
-.thumb-preview-context-menu-item {
-  display: block;
-  width: 100%;
-  padding: 10px 14px;
-  border: none;
-  background: transparent;
-  color: #eee;
-  font-size: 0.875rem;
-  text-align: left;
-  cursor: pointer;
+.card-transcode-overlay--forced {
+  opacity: 1;
+  pointer-events: auto;
 }
 
-.thumb-preview-context-menu-item:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.08);
+.card-transcode-overlay--busy {
+  cursor: progress;
 }
 
-.thumb-preview-context-menu-item:disabled {
-  opacity: 0.6;
-  cursor: default;
+.card-transcode-overlay-text {
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.92rem;
+  line-height: 1.35;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
 }
 
 /* ─── CARD INFO ──────────────────────────────────────────── */
