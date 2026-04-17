@@ -59,29 +59,24 @@ body {
   background-color: #f40612;
 }
 
-/* ─── DASHBOARD – fila horizontal única ──────────────────── */
+/* ─── DASHBOARD – rejilla responsive ─────────────────────── */
 .dashboard {
-  padding: 32px 28px 40px;
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  scroll-snap-type: x mandatory;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-}
-
-.dashboard::-webkit-scrollbar {
-  display: none;
+  padding: 32px max(20px, 4vw) 48px;
+  max-width: 1920px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px 16px;
+  align-content: start;
 }
 
 /* ─── VIDEO CARD ─────────────────────────────────────────── */
 .video-card {
   display: flex;
   flex-direction: column;
-  flex: 0 0 220px;
+  min-width: 0;
   padding: 0;
   border-radius: 4px;
-  scroll-snap-align: start;
   transition: transform 0.25s ease, z-index 0s 0.25s;
   position: relative;
   z-index: 1;
@@ -313,6 +308,40 @@ body {
   background: rgba(20, 20, 20, 0.95);
   white-space: nowrap;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+}
+
+.thumb-preview-context-menu {
+  position: fixed;
+  z-index: 200;
+  min-width: 180px;
+  padding: 4px 0;
+  margin: 0;
+  border-radius: 4px;
+  background: #2a2a2a;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  pointer-events: auto;
+}
+
+.thumb-preview-context-menu-item {
+  display: block;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  background: transparent;
+  color: #eee;
+  font-size: 0.875rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.thumb-preview-context-menu-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.thumb-preview-context-menu-item:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* ─── CARD INFO ──────────────────────────────────────────── */

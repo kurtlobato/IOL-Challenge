@@ -3,10 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,6 +60,129 @@ func TestListVideosLocal(t *testing.T) {
 	}
 	if list[0].ThumbnailURL == nil || *list[0].ThumbnailURL == "" {
 		t.Fatalf("expected thumbnailUrl, dto: %+v", list[0])
+	}
+}
+
+func writeMinimalMP4ForFFmpegTests(t *testing.T, path string) {
+	t.Helper()
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not in PATH")
+	}
+	cmd := exec.Command(
+		"ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "color=c=black:s=160x120:d=0.5",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", path,
+	)
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("ffmpeg test clip: %v", err)
+	}
+}
+
+func newTestServerWithFFmpegClip(t *testing.T) *Server {
+	t.Helper()
+	dir := t.TempDir()
+	root := filepath.Join(dir, "lib")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(root, "clip.mp4")
+	writeMinimalMP4ForFFmpegTests(t, f)
+	stInfo, err := os.Stat(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dir, "db.sqlite")
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	now := time.Now().UTC()
+	v := &store.Video{
+		ID:          "11111111-1111-1111-1111-111111111111",
+		RootIndex:   0,
+		RelPath:     "clip.mp4",
+		Title:       "clip",
+		SizeBytes:   stInfo.Size(),
+		Mtime:       now,
+		ContentType: "video/mp4",
+		IndexedAt:   now,
+	}
+	if err := st.UpsertVideo(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Listen:       ":0",
+		NodeName:     "test",
+		Version:      "test",
+		LibraryRoots: []string{root},
+		Peers:        nil,
+	}
+	return NewServer(cfg, "22222222-2222-2222-2222-222222222222", st, []string{root}, "http://127.0.0.1", dir)
+}
+
+func TestPostThumbnailSetAtSeconds(t *testing.T) {
+	t.Parallel()
+	srv := newTestServerWithFFmpegClip(t)
+	ts := httptest.NewServer(srv.Router())
+	defer ts.Close()
+	// Composite id as returned by the API for this node + video.
+	id := "22222222-2222-2222-2222-222222222222%3A11111111-1111-1111-1111-111111111111"
+	req, err := http.NewRequest(
+		http.MethodPost,
+		ts.URL+"/api/videos/"+id+"/thumbnail",
+		strings.NewReader(`{"seconds":0.05}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		b, _ := io.ReadAll(res.Body)
+		t.Fatalf("status %d: %s", res.StatusCode, string(b))
+	}
+	get, err := http.Get(ts.URL + "/api/videos/" + id + "/thumbnail.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer get.Body.Close()
+	if get.StatusCode != http.StatusOK {
+		t.Fatalf("thumbnail get status %d", get.StatusCode)
+	}
+}
+
+func TestPostThumbnailSetInvalidJSON(t *testing.T) {
+	t.Parallel()
+	srv := newTestServer(t)
+	ts := httptest.NewServer(srv.Router())
+	defer ts.Close()
+	id := "22222222-2222-2222-2222-222222222222%3A11111111-1111-1111-1111-111111111111"
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/videos/"+id+"/thumbnail", strings.NewReader(`{`))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", res.StatusCode)
+	}
+}
+
+func TestPeerBaseURLsDedupesStaticAndMDNS(t *testing.T) {
+	t.Parallel()
+	srv := newTestServer(t)
+	srv.cfg.Peers = []string{"http://10.0.0.1:1"}
+	srv.SetMDNSPeers([]string{"http://10.0.0.1:1", "http://10.0.0.2:2"})
+	got := srv.peerBaseURLs()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 unique bases, got %d: %v", len(got), got)
 	}
 }
 

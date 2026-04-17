@@ -1,19 +1,35 @@
 import Hls from "hls.js";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { setThumbnailAtSeconds } from "./api";
 import { formatVideoDurationHms } from "./formatYoutubeStats";
 
+type MediaSource = { kind: "hls"; url: string } | { kind: "progressive"; url: string };
+
+function resolveMediaSource(
+  manifestUrl: string | null | undefined,
+  progressiveUrl: string | null | undefined,
+): MediaSource | null {
+  const m = manifestUrl?.trim();
+  if (m) return { kind: "hls", url: m };
+  const p = progressiveUrl?.trim();
+  if (p) return { kind: "progressive", url: p };
+  return null;
+}
+
 type Props = {
-  manifestUrl: string;
+  manifestUrl?: string | null;
+  progressiveUrl?: string | null;
   resumeAt?: number;
   onCommitTime?: (seconds: number) => void;
-  /** Mientras carga el preview por scrub; evita recuadro negro vacío. */
   posterUrl?: string | null;
-  /** Menú contextual abierto: sin desmontar (evita reiniciar HLS); solo pausa y bloquea punteros. */
   interactionLocked?: boolean;
+  videoId?: string;
+  thumbnailApiOrigin?: string | null;
+  onThumbnailUpdated?: () => void | Promise<void>;
+  onThumbnailError?: (message: string) => void;
 };
 
 const PROBE_SEEK_MS = 100;
-/** Persistir posición en el mapa del padre sin spamear en cada frame. */
 const COMMIT_INTERVAL_MS = 750;
 
 function applyResumeTime(video: HTMLVideoElement, resumeAt: number) {
@@ -38,12 +54,46 @@ function readCurrent(v: HTMLVideoElement) {
   return Number.isFinite(v.currentTime) && v.currentTime >= 0 ? v.currentTime : 0;
 }
 
-/** Conecta manifest a un video; devuelve cleanup. */
-function attachManifest(
+function attachProgressive(
   video: HTMLVideoElement,
-  manifestUrl: string,
+  url: string,
   options: { playOnReady: boolean; resumeAt: number },
 ): () => void {
+  video.muted = true;
+  video.loop = options.playOnReady;
+  video.playsInline = true;
+  video.preload = "auto";
+  video.src = url;
+
+  const onReady = () => {
+    if (options.playOnReady) {
+      applyResumeTime(video, options.resumeAt);
+      void video.play().catch(() => {});
+    } else {
+      video.pause();
+      video.currentTime = 0;
+    }
+  };
+  video.addEventListener("canplay", onReady, { once: true });
+  return () => {
+    video.removeEventListener("canplay", onReady);
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+  };
+}
+
+/** Conecta manifest HLS o URL progresiva; devuelve cleanup. */
+function attachMedia(
+  video: HTMLVideoElement,
+  source: MediaSource,
+  options: { playOnReady: boolean; resumeAt: number },
+): () => void {
+  if (source.kind === "progressive") {
+    return attachProgressive(video, source.url, options);
+  }
+
+  const manifestUrl = source.url;
   video.muted = true;
   video.loop = options.playOnReady;
   video.playsInline = true;
@@ -80,7 +130,7 @@ function attachManifest(
     };
   }
 
-  const hlsConfig: any = { enableWorker: true };
+  const hlsConfig: { enableWorker: boolean; startPosition?: number } = { enableWorker: true };
   if (options.playOnReady && options.resumeAt > 0) {
     hlsConfig.startPosition = options.resumeAt;
   }
@@ -99,14 +149,20 @@ function attachManifest(
 
 export function VideoHoverPreview({
   manifestUrl,
+  progressiveUrl,
   resumeAt = 0,
   onCommitTime,
   posterUrl,
   interactionLocked = false,
+  videoId,
+  thumbnailApiOrigin,
+  onThumbnailUpdated,
+  onThumbnailError,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const tipVideoRef = useRef<HTMLVideoElement>(null);
   const railRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const onCommitRef = useRef(onCommitTime);
   onCommitRef.current = onCommitTime;
 
@@ -114,14 +170,19 @@ export function VideoHoverPreview({
     pending: number | null;
     timer: ReturnType<typeof setTimeout> | null;
   }>({ pending: null, timer: null });
-  /** Último tiempo de scrub (para aplicar cuando el HLS del tooltip termina de cargar). */
   const pendingTipSeekRef = useRef<number | null>(null);
 
   const [progress, setProgress] = useState({ current: 0, duration: 0 });
   const [tooltip, setTooltip] = useState<{ x: number; label: string } | null>(null);
   const [scrubbing, setScrubbing] = useState(false);
-  /** Carga HLS / seek del preview en tooltip: oculta poster y muestra spinner. */
   const [tipPreviewBusy, setTipPreviewBusy] = useState(true);
+  const [thumbMenu, setThumbMenu] = useState<{ x: number; y: number; seconds: number } | null>(
+    null,
+  );
+  const [thumbBusy, setThumbBusy] = useState(false);
+
+  const media = resolveMediaSource(manifestUrl, progressiveUrl);
+  const mediaKey = media ? `${media.kind}:${media.url}` : "";
 
   const timeFromClientX = useCallback((clientX: number) => {
     const rail = railRef.current;
@@ -197,9 +258,9 @@ export function VideoHoverPreview({
 
   useEffect(() => {
     const main = videoRef.current;
-    if (!main) return;
+    if (!main || !media) return;
 
-    const cleanMain = attachManifest(main, manifestUrl, {
+    const cleanMain = attachMedia(main, media, {
       playOnReady: true,
       resumeAt,
     });
@@ -208,11 +269,10 @@ export function VideoHoverPreview({
       clearTipThrottle();
       cleanMain();
     };
-  }, [manifestUrl, resumeAt, clearTipThrottle]);
+  }, [mediaKey, media, resumeAt, clearTipThrottle]);
 
-  /** HLS solo en el vídeo del tooltip (visible): el decodificador pinta frames reales, sin canvas. */
   useEffect(() => {
-    if (!tooltip || scrubbing) {
+    if (!tooltip || scrubbing || !media) {
       pendingTipSeekRef.current = null;
       return;
     }
@@ -249,7 +309,7 @@ export function VideoHoverPreview({
     tip.addEventListener("seeking", onSeeking);
     tip.addEventListener("seeked", onSeeked);
 
-    const cleanTip = attachManifest(tip, manifestUrl, {
+    const cleanTip = attachMedia(tip, media, {
       playOnReady: false,
       resumeAt: 0,
     });
@@ -261,7 +321,7 @@ export function VideoHoverPreview({
       tip.removeEventListener("seeked", onSeeked);
       cleanTip();
     };
-  }, [tooltip, scrubbing, manifestUrl, flushSeekTipVideo]);
+  }, [tooltip, scrubbing, media, mediaKey, flushSeekTipVideo]);
 
   useEffect(() => {
     const main = videoRef.current;
@@ -277,10 +337,7 @@ export function VideoHoverPreview({
       const dur = readDuration(main);
       setProgress({ current: cur, duration: dur });
       const now = performance.now();
-      if (
-        now - lastPeriodicCommit >= COMMIT_INTERVAL_MS &&
-        cur > 0.2
-      ) {
+      if (now - lastPeriodicCommit >= COMMIT_INTERVAL_MS && cur > 0.2) {
         lastPeriodicCommit = now;
         onCommitRef.current?.(cur);
       }
@@ -298,7 +355,7 @@ export function VideoHoverPreview({
       main.removeEventListener("durationchange", sync);
       main.removeEventListener("seeked", sync);
     };
-  }, [manifestUrl, resumeAt]);
+  }, [mediaKey, resumeAt]);
 
   useEffect(() => {
     if (!scrubbing) return;
@@ -335,8 +392,52 @@ export function VideoHoverPreview({
     }
   }, [interactionLocked, clearTipThrottle]);
 
+  useEffect(() => {
+    if (!thumbMenu) return;
+    let remove: (() => void) | undefined;
+    const tid = window.setTimeout(() => {
+      const close = (e: MouseEvent) => {
+        if (menuRef.current?.contains(e.target as Node)) return;
+        setThumbMenu(null);
+      };
+      window.addEventListener("mousedown", close);
+      remove = () => window.removeEventListener("mousedown", close);
+    }, 0);
+    return () => {
+      window.clearTimeout(tid);
+      remove?.();
+    };
+  }, [thumbMenu]);
+
+  useEffect(() => {
+    if (!thumbMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setThumbMenu(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [thumbMenu]);
+
+  const onSetThumbnail = useCallback(async () => {
+    if (!videoId || thumbMenu == null) return;
+    setThumbBusy(true);
+    try {
+      await setThumbnailAtSeconds(videoId, thumbMenu.seconds, thumbnailApiOrigin ?? undefined);
+      setThumbMenu(null);
+      await onThumbnailUpdated?.();
+    } catch (e) {
+      onThumbnailError?.(e instanceof Error ? e.message : String(e));
+    } finally {
+      setThumbBusy(false);
+    }
+  }, [videoId, thumbMenu, thumbnailApiOrigin, onThumbnailUpdated, onThumbnailError]);
+
   const { current, duration } = progress;
   const playedPct = duration > 0 ? (current / duration) * 100 : 0;
+
+  if (!media) {
+    return null;
+  }
 
   return (
     <div
@@ -395,6 +496,15 @@ export function VideoHoverPreview({
               clearTipThrottle();
             }
           }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!videoId) return;
+            const t = timeFromClientX(e.clientX);
+            if (t == null) return;
+            setThumbMenu({ x: e.clientX, y: e.clientY, seconds: t });
+            setTooltip(null);
+          }}
         >
           <div className="thumb-preview-rail-track" />
           <div className="thumb-preview-rail-played" style={{ width: `${playedPct}%` }} />
@@ -433,6 +543,27 @@ export function VideoHoverPreview({
           ) : null}
         </div>
       </div>
+      {thumbMenu && videoId ? (
+        <div
+          ref={menuRef}
+          className="thumb-preview-context-menu"
+          style={{ left: thumbMenu.x, top: thumbMenu.y }}
+          role="menu"
+        >
+          <button
+            type="button"
+            className="thumb-preview-context-menu-item"
+            role="menuitem"
+            disabled={thumbBusy}
+            onClick={(e) => {
+              e.stopPropagation();
+              void onSetThumbnail();
+            }}
+          >
+            {thumbBusy ? "Guardando…" : "Establecer miniatura"}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

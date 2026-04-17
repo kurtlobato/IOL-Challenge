@@ -9,6 +9,7 @@ import {
   playbackOrigin,
   type VideoItem,
 } from "./api";
+import { VideoHoverPreview } from "./VideoHoverPreview";
 import { VideoPlayer } from "./VideoPlayer";
 import { formatRelativeUploadDate } from "./formatUploadDate";
 import { formatVideoDurationHms, formatViewsLine } from "./formatYoutubeStats";
@@ -408,33 +409,35 @@ export default function App() {
                 onMouseEnter={() => setPreviewId(v.id)}
                 onMouseLeave={() => setPreviewId((cur) => (cur === v.id ? null : cur))}
               >
-                {previewId === v.id ? (
-                  <div className="thumbnail-preview-wrap">
-                    <video
-                      className="thumbnail-preview-video"
-                      muted
-                      playsInline
-                      preload="metadata"
-                      loop
-                      autoPlay
-                      src={
-                        v.transcode?.status === "READY" && v.transcode?.mp4Url
-                          ? v.transcode.mp4Url
-                          : v.streamUrl
-                      }
-                      onLoadedMetadata={(e) => {
-                        const el = e.currentTarget;
-                        try {
-                          el.currentTime = Math.min(3, Number.isFinite(el.duration) ? Math.max(0, el.duration - 0.25) : 3);
-                        } catch {
-                          // ignore
-                        }
-                      }}
-                      onCanPlay={(e) => {
-                        void e.currentTarget.play().catch(() => {});
-                      }}
-                    />
-                  </div>
+                {previewId === v.id &&
+                ((v.transcode?.status === "READY" && v.transcode?.mp4Url) || v.streamUrl) ? (
+                  <VideoHoverPreview
+                    key={v.id}
+                    manifestUrl={v.manifestUrl}
+                    progressiveUrl={
+                      v.transcode?.status === "READY" && v.transcode?.mp4Url
+                        ? v.transcode.mp4Url
+                        : v.streamUrl || null
+                    }
+                    resumeAt={3}
+                    posterUrl={v.thumbnailUrl}
+                    videoId={v.id}
+                    thumbnailApiOrigin={v.streamUrl ? playbackOrigin(v.streamUrl) : undefined}
+                    onThumbnailUpdated={async () => {
+                      await refresh({ silent: true });
+                      setItems((prev) =>
+                        prev.map((x) =>
+                          x.id === v.id && x.thumbnailUrl
+                            ? {
+                                ...x,
+                                thumbnailUrl: `${String(x.thumbnailUrl).split("?")[0]}?v=${Date.now()}`,
+                              }
+                            : x,
+                        ),
+                      );
+                    }}
+                    onThumbnailError={(m) => setError(m)}
+                  />
                 ) : null}
                 {v.thumbnailUrl ? <img src={v.thumbnailUrl} alt="" loading="lazy" /> : null}
                 <span className={`thumb-fallback${v.thumbnailUrl ? " is-hidden" : ""}`} aria-hidden>

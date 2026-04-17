@@ -112,6 +112,28 @@ export async function getVideo(id: string): Promise<VideoItem> {
   return normalizeVideo(await parseJson<VideoItem>(res));
 }
 
+export async function setThumbnailAtSeconds(
+  id: string,
+  seconds: number,
+  apiOrigin?: string | null,
+): Promise<void> {
+  const enc = encodeURIComponent(id);
+  const prefix =
+    apiOrigin != null && apiOrigin !== ""
+      ? `${apiOrigin.replace(/\/$/, "")}/api`
+      : apiPrefix();
+  const res = await fetch(`${prefix}/videos/${enc}/thumbnail`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ seconds }),
+  });
+  if (res.status === 204) return;
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error((err as { error?: string }).error ?? res.statusText);
+  }
+}
+
 export async function requestTranscodeMp4(
   id: string,
   apiOrigin?: string | null,

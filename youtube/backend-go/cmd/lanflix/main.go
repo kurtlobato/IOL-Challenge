@@ -117,6 +117,18 @@ func main() {
 		} else {
 			log.Printf("mdns: disabled (invalid listen): %v", err)
 		}
+		if discovery.BrowseEnabled() {
+			if err := discovery.StartBrowse(ctx, discovery.BrowseConfig{
+				SelfNodeID: nid,
+				OnUpdate:   srv.SetMDNSPeers,
+			}); err != nil {
+				log.Printf("mdns browse: %v", err)
+			} else {
+				log.Printf("mdns: browsing _lanflix._tcp for peers")
+			}
+		} else {
+			log.Printf("mdns browse: disabled by LANFLIX_MDNS_BROWSE=0")
+		}
 	} else {
 		log.Printf("mdns: disabled by LANFLIX_MDNS=0")
 	}

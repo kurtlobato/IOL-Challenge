@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -43,6 +44,9 @@ type Server struct {
 
 	thumbMu      sync.Mutex
 	thumbRunning map[string]struct{} // videoID being generated
+
+	mdnsPeersMu sync.RWMutex
+	mdnsPeers   []string // base URLs from mDNS browse (merged with cfg.Peers in peerBaseURLs)
 }
 
 // NewServer builds the API handler.
@@ -76,6 +80,39 @@ func (s *Server) getRoots() []string {
 	return out
 }
 
+// SetMDNSPeers replaces the set of peer base URLs discovered via mDNS (used for federation).
+func (s *Server) SetMDNSPeers(urls []string) {
+	s.mdnsPeersMu.Lock()
+	defer s.mdnsPeersMu.Unlock()
+	s.mdnsPeers = append([]string(nil), urls...)
+}
+
+func (s *Server) peerBaseURLs() []string {
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(p string) {
+		p = strings.TrimSpace(strings.TrimRight(p, "/"))
+		if p == "" {
+			return
+		}
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	for _, p := range s.cfg.Peers {
+		add(p)
+	}
+	s.mdnsPeersMu.RLock()
+	mdns := s.mdnsPeers
+	s.mdnsPeersMu.RUnlock()
+	for _, p := range mdns {
+		add(p)
+	}
+	return out
+}
+
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -88,6 +125,7 @@ func (s *Server) Router() http.Handler {
 	r.Get("/api/videos", s.handleListVideos)
 	r.Get("/api/videos/{id}", s.handleGetVideo)
 	r.Get("/api/videos/{id}/thumbnail.jpg", s.handleGetThumbnail)
+	r.Post("/api/videos/{id}/thumbnail", s.handlePostThumbnailSet)
 	r.Get("/api/videos/{id}/stream", s.handleStream)
 	r.Post("/api/videos/{id}/views", s.handlePostView)
 	r.Post("/api/videos/{id}/transcode", s.handlePostTranscode)
@@ -196,7 +234,7 @@ func (s *Server) collectNodes(r *http.Request, depth int) ([]nodeDTO, error) {
 	if nextDepth < 1 {
 		nextDepth = 1
 	}
-	for _, peer := range s.cfg.Peers {
+	for _, peer := range s.peerBaseURLs() {
 		peer = strings.TrimRight(peer, "/")
 		list, err := s.fetchNodes(peer, nextDepth)
 		if err != nil {
@@ -474,6 +512,98 @@ func (s *Server) handleGetThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.NotFound(w, r)
+}
+
+// handlePostThumbnailSet writes thumbnail.jpg from a frame at JSON body {"seconds": n} using ffmpeg.
+func (s *Server) handlePostThumbnailSet(w http.ResponseWriter, r *http.Request) {
+	id := readVideoIDParam(r)
+	nid, vid, composite := parseCompositeID(id)
+	if !composite {
+		vid = id
+		nid = s.nodeID
+	}
+	if nid != s.nodeID {
+		httpError(w, http.StatusNotFound, "video lives on another node")
+		return
+	}
+	if s.dataDir == "" {
+		httpError(w, http.StatusInternalServerError, "data dir not configured")
+		return
+	}
+	ctx := r.Context()
+	v, err := s.store.GetVideo(ctx, vid)
+	if err != nil || v == nil {
+		httpError(w, http.StatusNotFound, "not found")
+		return
+	}
+	var body struct {
+		Seconds float64 `json:"seconds"`
+	}
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<16))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	sec := body.Seconds
+	if math.IsNaN(sec) || math.IsInf(sec, 0) || sec < 0 {
+		httpError(w, http.StatusBadRequest, "invalid seconds")
+		return
+	}
+	if sec > 24*3600 {
+		httpError(w, http.StatusBadRequest, "seconds too large")
+		return
+	}
+	if v.DurationSeconds != nil && *v.DurationSeconds > 0 {
+		if sec > *v.DurationSeconds {
+			sec = *v.DurationSeconds - 1e-3
+		}
+	}
+
+	roots := s.getRoots()
+	if v.RootIndex < 0 || v.RootIndex >= len(roots) {
+		httpError(w, http.StatusNotFound, "library root missing")
+		return
+	}
+	inPath, err := resolveVideoPath(roots[v.RootIndex], v.RelPath)
+	if err != nil {
+		httpError(w, http.StatusNotFound, "source file missing")
+		return
+	}
+	outFull := filepath.Join(s.dataDir, filepath.FromSlash(s.thumbnailRelPath(vid)))
+	if err := os.MkdirAll(filepath.Dir(outFull), 0o755); err != nil {
+		httpError(w, http.StatusInternalServerError, "mkdir")
+		return
+	}
+	tmp := strings.TrimSuffix(outFull, ".jpg") + ".tmp.jpg"
+	_ = os.Remove(tmp)
+
+	tctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(tctx, "ffmpeg",
+		"-hide_banner",
+		"-loglevel", "error",
+		"-y",
+		"-i", inPath,
+		"-ss", fmt.Sprintf("%.3f", sec),
+		"-frames:v", "1",
+		"-vf", "scale=360:-1",
+		"-q:v", "4",
+		tmp,
+	)
+	if err := cmd.Run(); err != nil {
+		httpError(w, http.StatusInternalServerError, "ffmpeg failed")
+		return
+	}
+	if st, err := os.Stat(tmp); err != nil || st.Size() == 0 {
+		httpError(w, http.StatusInternalServerError, "thumbnail not written")
+		return
+	}
+	if err := os.Rename(tmp, outFull); err != nil {
+		httpError(w, http.StatusInternalServerError, "rename failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) getCompat(ctx context.Context, videoID string) (*sourceDTO, *compatDTO) {
