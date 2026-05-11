@@ -552,7 +552,7 @@ func (s *Server) toVideoDTO(ctx context.Context, v store.Video, publicBase, nid 
 		Source:          src,
 		Compat:          compat,
 		Transcode:       tc,
-		Subtitles:       s.findSubtitles(v, base),
+		Subtitles:       s.findSubtitles(&v, base),
 	}, nil
 }
 
