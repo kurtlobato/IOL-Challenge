@@ -1204,24 +1204,6 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, filepath.Base(v.RelPath), st.ModTime(), osFile)
 }
 
-func resolveVideoPath(root, rel string) (string, error) {
-	root = filepath.Clean(root)
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return "", err
-	}
-	p := filepath.Join(rootAbs, filepath.FromSlash(rel))
-	p, err = filepath.Abs(p)
-	if err != nil {
-		return "", err
-	}
-	relToRoot, err := filepath.Rel(rootAbs, p)
-	if err != nil || strings.HasPrefix(relToRoot, "..") {
-		return "", fmt.Errorf("path escape")
-	}
-	return p, nil
-}
-
 func (s *Server) handlePostView(w http.ResponseWriter, r *http.Request) {
 	id := readVideoIDParam(r)
 	nid, vid, composite := parseCompositeID(id)
@@ -1245,20 +1227,3 @@ func (s *Server) handlePostView(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]int64{"viewCount": c})
 }
 
-func openUnderRoot(root, rel string) (*os.File, error) {
-	root = filepath.Clean(root)
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return nil, err
-	}
-	p := filepath.Join(rootAbs, filepath.FromSlash(rel))
-	p, err = filepath.Abs(p)
-	if err != nil {
-		return nil, err
-	}
-	relToRoot, err := filepath.Rel(rootAbs, p)
-	if err != nil || strings.HasPrefix(relToRoot, "..") {
-		return nil, fmt.Errorf("path escape")
-	}
-	return os.Open(p)
-}
