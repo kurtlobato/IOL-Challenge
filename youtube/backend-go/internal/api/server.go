@@ -557,10 +557,13 @@ func (s *Server) toVideoDTO(ctx context.Context, v store.Video, publicBase, nid 
 }
 
 func (s *Server) findSubtitles(v *store.Video, base string) []subtitleDTO {
-	if s.cfg.DataDir == "" {
+	s.rootsMu.RLock()
+	defer s.rootsMu.RUnlock()
+	if v.RootIndex < 0 || v.RootIndex >= len(s.roots) {
 		return nil
 	}
-	videoPath := filepath.Join(s.cfg.DataDir, filepath.FromSlash(v.RelPath))
+	root := s.roots[v.RootIndex]
+	videoPath := filepath.Join(root, filepath.FromSlash(v.RelPath))
 	dir := filepath.Dir(videoPath)
 	baseName := strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath))
 
@@ -609,7 +612,14 @@ func (s *Server) handleGetSubtitle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	videoPath := filepath.Join(s.cfg.DataDir, filepath.FromSlash(v.RelPath))
+	s.rootsMu.RLock()
+	defer s.rootsMu.RUnlock()
+	if v.RootIndex < 0 || v.RootIndex >= len(s.roots) {
+		http.NotFound(w, r)
+		return
+	}
+	root := s.roots[v.RootIndex]
+	videoPath := filepath.Join(root, filepath.FromSlash(v.RelPath))
 	dir := filepath.Dir(videoPath)
 	baseName := strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath))
 
