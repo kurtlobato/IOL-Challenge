@@ -167,6 +167,7 @@ func (s *Server) Router() http.Handler {
 	r.Patch("/api/videos/{id}", s.handlePatchVideo)
 	r.Delete("/api/videos/{id}", s.handleDeleteVideo)
 	r.Get("/api/videos/{id}/thumbnail.jpg", s.handleGetThumbnail)
+	r.Get("/api/videos/{id}/subtitles/{index}", s.handleGetSubtitle)
 	r.Post("/api/videos/{id}/thumbnail", s.handlePostThumbnailSet)
 	r.Get("/api/videos/{id}/stream", s.handleStream)
 	r.Post("/api/videos/{id}/views", s.handlePostView)
@@ -342,6 +343,12 @@ type viewBody struct {
 	WatchedSeconds float64 `json:"watchedSeconds"`
 }
 
+type subtitleDTO struct {
+	ID    int    `json:"id"`
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+
 type videoDTO struct {
 	ID              string         `json:"id"`
 	NodeID          string         `json:"nodeId"`
@@ -366,6 +373,7 @@ type videoDTO struct {
 	Source          *sourceDTO     `json:"source,omitempty"`
 	Compat          *compatDTO     `json:"compat,omitempty"`
 	Transcode       *transcodeDTO  `json:"transcode,omitempty"`
+	Subtitles       []subtitleDTO  `json:"subtitles,omitempty"`
 }
 
 type sourceDTO struct {
@@ -422,6 +430,26 @@ func (s *Server) handleListFederated(w http.ResponseWriter, r *http.Request) {
 	seen := map[string]struct{}{}
 	merged := make([]videoDTO, 0)
 	for _, n := range nodes {
+		if n.NodeID == s.nodeID {
+			// Skip network call for self to avoid loopback issues (especially in emulators)
+			videos, err := s.store.ListVideos(ctx)
+			if err != nil {
+				continue
+			}
+			base := s.publicBaseFromRequest(r)
+			for _, v := range videos {
+				if _, ok := seen[v.ID]; ok {
+					continue
+				}
+				dto, err := s.toVideoDTO(ctx, v, base, s.nodeID)
+				if err != nil {
+					continue
+				}
+				seen[v.ID] = struct{}{}
+				merged = append(merged, dto)
+			}
+			continue
+		}
 		u := strings.TrimRight(n.BaseURL, "/") + "/api/videos"
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
@@ -524,7 +552,82 @@ func (s *Server) toVideoDTO(ctx context.Context, v store.Video, publicBase, nid 
 		Source:          src,
 		Compat:          compat,
 		Transcode:       tc,
+		Subtitles:       s.findSubtitles(v, base),
 	}, nil
+}
+
+func (s *Server) findSubtitles(v *store.Video, base string) []subtitleDTO {
+	if s.cfg.DataDir == "" {
+		return nil
+	}
+	videoPath := filepath.Join(s.cfg.DataDir, filepath.FromSlash(v.RelPath))
+	dir := filepath.Dir(videoPath)
+	baseName := strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath))
+
+	var subs []subtitleDTO
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	index := 0
+	for _, f := range files {
+		if f.IsDir() {
+			continue
+		}
+		name := f.Name()
+		if strings.HasPrefix(name, baseName) && strings.ToLower(filepath.Ext(name)) == ".srt" {
+			label := "Subtítulo"
+			suffix := strings.TrimPrefix(strings.TrimSuffix(name, ".srt"), baseName)
+			if suffix != "" {
+				label += " (" + strings.Trim(suffix, "._- ") + ")"
+			}
+			subs = append(subs, subtitleDTO{
+				ID:    index,
+				Label: label,
+				URL:   fmt.Sprintf("%s/api/videos/%s/subtitles/%d", base, url.PathEscape(composeID(s.nodeID, v.ID)), index),
+			})
+			index++
+		}
+	}
+	return subs
+}
+
+func (s *Server) handleGetSubtitle(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	indexStr := chi.URLParam(r, "index")
+	index, _ := strconv.Atoi(indexStr)
+
+	_, vid, composite := parseCompositeID(id)
+	if !composite {
+		vid = id
+	}
+
+	v, err := s.store.GetVideo(r.Context(), vid)
+	if err != nil || v == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	videoPath := filepath.Join(s.cfg.DataDir, filepath.FromSlash(v.RelPath))
+	dir := filepath.Dir(videoPath)
+	baseName := strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath))
+
+	var srtFiles []string
+	files, _ := os.ReadDir(dir)
+	for _, f := range files {
+		if !f.IsDir() && strings.HasPrefix(f.Name(), baseName) && strings.ToLower(filepath.Ext(f.Name())) == ".srt" {
+			srtFiles = append(srtFiles, f.Name())
+		}
+	}
+
+	if index < 0 || index >= len(srtFiles) {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-subrip")
+	http.ServeFile(w, r, filepath.Join(dir, srtFiles[index]))
 }
 
 func (s *Server) thumbnailRelPath(videoID string) string {

@@ -20,6 +20,11 @@ import {
 import { VideoPlayer } from "./VideoPlayer";
 import { formatRelativeUploadDate } from "./formatUploadDate";
 import { formatVideoDurationHms, formatViewsLine } from "./formatYoutubeStats";
+import {
+  browseSeriesTitleFromItems,
+  episodeMatchesBrowse,
+  seriesSummariesFromItems,
+} from "./seriesMerge";
 import "./App.css";
 
 function parseWatchId(pathname: string): string | undefined {
@@ -53,42 +58,6 @@ function canHoverPreviewVideo(v: VideoItem): boolean {
   if (v.transcode?.status === "READY" && v.transcode?.mp4Url) return true;
   if (v.compat?.browserPlayable === false) return false;
   return Boolean(v.streamUrl);
-}
-
-type SeriesSummary = {
-  id: string;
-  title: string;
-  thumbnailUrl: string | null;
-  episodeCount: number;
-};
-
-/** Una tarjeta por serie (miniatura + título + nº de capítulos). */
-function seriesSummariesFromItems(items: VideoItem[]): SeriesSummary[] {
-  const acc = new Map<string, { title: string; thumb: string | null; count: number }>();
-  for (const v of items) {
-    const sid = v.series?.id;
-    if (!sid) continue;
-    if (!acc.has(sid)) {
-      acc.set(sid, {
-        title: v.series?.title ?? sid,
-        thumb: v.series?.thumbnailUrl ?? v.thumbnailUrl ?? null,
-        count: 0,
-      });
-    }
-    const row = acc.get(sid)!;
-    row.count++;
-    if (!row.thumb) {
-      row.thumb = v.series?.thumbnailUrl ?? v.thumbnailUrl ?? null;
-    }
-  }
-  return [...acc.entries()]
-    .map(([id, x]) => ({
-      id,
-      title: x.title,
-      thumbnailUrl: x.thumb,
-      episodeCount: x.count,
-    }))
-    .sort((a, b) => a.title.localeCompare(b.title, "es"));
 }
 
 function compareEpisodesInSeries(a: VideoItem, b: VideoItem): number {
@@ -538,20 +507,19 @@ export default function App() {
 
   useEffect(() => {
     if (!browseSeriesId) return;
-    if (!items.some((v) => v.series?.id === browseSeriesId)) {
+    if (!items.some((v) => episodeMatchesBrowse(v, browseSeriesId, federated))) {
       setBrowseSeriesId(null);
     }
-  }, [items, browseSeriesId]);
+  }, [items, browseSeriesId, federated]);
 
-  const seriesSummaries = seriesSummariesFromItems(items);
+  const seriesSummaries = seriesSummariesFromItems(items, federated);
   const looseVideos = items.filter((v) => !v.series?.id);
   const episodesInBrowse = useMemo(() => {
     if (!browseSeriesId) return [];
-    const eps = items.filter((v) => v.series?.id === browseSeriesId);
+    const eps = items.filter((v) => episodeMatchesBrowse(v, browseSeriesId, federated));
     return [...eps].sort(compareEpisodesInSeries);
-  }, [items, browseSeriesId]);
-  const browseSeriesTitle =
-    items.find((v) => v.series?.id === browseSeriesId)?.series?.title ?? "Serie";
+  }, [items, browseSeriesId, federated]);
+  const browseSeriesTitle = browseSeriesTitleFromItems(items, browseSeriesId, federated);
 
   const renderVideoCard = (v: VideoItem) => (
     <div
