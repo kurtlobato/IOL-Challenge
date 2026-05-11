@@ -40,12 +40,13 @@ type Store struct {
 }
 
 type MediaInfo struct {
-	VideoID    string
-	Container  string
-	VideoCodec string
-	AudioCodec string
-	PixFmt     string
-	UpdatedAt  time.Time
+	VideoID     string
+	Container   string
+	VideoCodec  string
+	AudioCodec  string
+	PixFmt      string
+	AudioTracks string // JSON encoded list of audio tracks
+	UpdatedAt   time.Time
 }
 
 type TranscodeInfo struct {
@@ -98,6 +99,7 @@ CREATE TABLE IF NOT EXISTS video_media (
   video_codec TEXT NOT NULL DEFAULT '',
   audio_codec TEXT NOT NULL DEFAULT '',
   pix_fmt TEXT NOT NULL DEFAULT '',
+  audio_tracks TEXT NOT NULL DEFAULT '[]',
   updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS video_transcodes (
@@ -187,7 +189,20 @@ func (s *Store) migrateSeasonEpisodeColumns() error {
 			return err
 		}
 	}
-	return nil
+	return s.migrateAudioTracksColumn()
+}
+
+func (s *Store) migrateAudioTracksColumn() error {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('video_media') WHERE name = 'audio_tracks'`).Scan(&n)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	_, err = s.db.Exec(`ALTER TABLE video_media ADD COLUMN audio_tracks TEXT NOT NULL DEFAULT '[]'`)
+	return err
 }
 
 // UpsertVideo inserts or updates a catalog row.
@@ -529,25 +544,26 @@ DELETE FROM series;
 
 func (s *Store) UpsertMediaInfo(ctx context.Context, m *MediaInfo) error {
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO video_media (video_id, container, video_codec, audio_codec, pix_fmt, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO video_media (video_id, container, video_codec, audio_codec, pix_fmt, audio_tracks, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(video_id) DO UPDATE SET
   container = excluded.container,
   video_codec = excluded.video_codec,
   audio_codec = excluded.audio_codec,
   pix_fmt = excluded.pix_fmt,
+  audio_tracks = excluded.audio_tracks,
   updated_at = excluded.updated_at
-`, m.VideoID, m.Container, m.VideoCodec, m.AudioCodec, m.PixFmt, m.UpdatedAt.UTC().Format(time.RFC3339Nano))
+`, m.VideoID, m.Container, m.VideoCodec, m.AudioCodec, m.PixFmt, m.AudioTracks, m.UpdatedAt.UTC().Format(time.RFC3339Nano))
 	return err
 }
 
 func (s *Store) GetMediaInfo(ctx context.Context, videoID string) (*MediaInfo, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT video_id, container, video_codec, audio_codec, pix_fmt, updated_at
+SELECT video_id, container, video_codec, audio_codec, pix_fmt, audio_tracks, updated_at
 FROM video_media WHERE video_id = ?`, videoID)
 	var m MediaInfo
 	var updated string
-	err := row.Scan(&m.VideoID, &m.Container, &m.VideoCodec, &m.AudioCodec, &m.PixFmt, &updated)
+	err := row.Scan(&m.VideoID, &m.Container, &m.VideoCodec, &m.AudioCodec, &m.PixFmt, &m.AudioTracks, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

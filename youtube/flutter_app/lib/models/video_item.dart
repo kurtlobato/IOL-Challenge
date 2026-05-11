@@ -49,6 +49,25 @@ class SubtitleItem {
     );
   }
 }
+class AudioTrackItem {
+  const AudioTrackItem({
+    required this.index,
+    required this.label,
+    required this.codec,
+  });
+
+  final int index;
+  final String label;
+  final String codec;
+
+  factory AudioTrackItem.fromJson(Map<String, dynamic> json) {
+    return AudioTrackItem(
+      index: (json['index'] as num).toInt(),
+      label: json['label'] as String? ?? 'Audio',
+      codec: json['codec'] as String? ?? '',
+    );
+  }
+}
 
 class VideoItem {
   const VideoItem({
@@ -76,6 +95,7 @@ class VideoItem {
     this.compat,
     this.transcode,
     this.subtitles = const [],
+    this.audioTracks = const [],
   });
 
   final String id;
@@ -102,10 +122,12 @@ class VideoItem {
   final Map<String, dynamic>? compat;
   final Map<String, dynamic>? transcode;
   final List<SubtitleItem> subtitles;
+  final List<AudioTrackItem> audioTracks;
 
   factory VideoItem.fromJson(Map<String, dynamic> json) {
     final seriesRaw = json['series'];
     final subsRaw = json['subtitles'] as List?;
+    final audioRaw = json['audioTracks'] as List?;
     
     return VideoItem(
       id: json['id'] as String,
@@ -135,6 +157,9 @@ class VideoItem {
       transcode: json['transcode'] as Map<String, dynamic>?,
       subtitles: subsRaw != null
           ? subsRaw.map((s) => SubtitleItem.fromJson(s as Map<String, dynamic>)).toList()
+          : const [],
+      audioTracks: audioRaw != null
+          ? audioRaw.map((s) => AudioTrackItem.fromJson(s as Map<String, dynamic>)).toList()
           : const [],
     );
   }

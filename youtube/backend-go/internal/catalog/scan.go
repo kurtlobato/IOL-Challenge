@@ -112,6 +112,12 @@ func probeAndUpsertMedia(ctx context.Context, st *store.Store, videoID, absPath 
 	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
 		return nil
 	}
+	type audioTrack struct {
+		Index int    `json:"index"`
+		Label string `json:"label"`
+		Codec string `json:"codec"`
+	}
+	var audioTracks []audioTrack
 	vc, ac, pix := "", "", ""
 	for _, s := range parsed.Streams {
 		switch s.CodecType {
@@ -121,22 +127,33 @@ func probeAndUpsertMedia(ctx context.Context, st *store.Store, videoID, absPath 
 				pix = s.PixFmt
 			}
 		case "audio":
+			label := fmt.Sprintf("Audio %d", len(audioTracks)+1)
+			if s.CodecName != "" {
+				label += " (" + s.CodecName + ")"
+			}
+			audioTracks = append(audioTracks, audioTrack{
+				Index: len(audioTracks),
+				Label: label,
+				Codec: s.CodecName,
+			})
 			if ac == "" {
 				ac = s.CodecName
 			}
 		}
 	}
+	audioTracksJSON, _ := json.Marshal(audioTracks)
 	container := parsed.Format.FormatName
 	if i := strings.Index(container, ","); i >= 0 {
 		container = container[:i]
 	}
 	return st.UpsertMediaInfo(ctx, &store.MediaInfo{
-		VideoID:    videoID,
-		Container:  container,
-		VideoCodec: vc,
-		AudioCodec: ac,
-		PixFmt:     pix,
-		UpdatedAt:  time.Now().UTC(),
+		VideoID:     videoID,
+		Container:   container,
+		VideoCodec:  vc,
+		AudioCodec:  ac,
+		PixFmt:      pix,
+		AudioTracks: string(audioTracksJSON),
+		UpdatedAt:   time.Now().UTC(),
 	})
 }
 

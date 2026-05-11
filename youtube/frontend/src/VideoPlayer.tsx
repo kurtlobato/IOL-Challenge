@@ -9,9 +9,11 @@ import {
   Rewind,
   Volume2,
   VolumeX,
+  Captions,
+  AudioLines,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { recordView } from "./api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { recordView, type SubtitleItem, type AudioTrack } from "./api";
 import { formatVideoDurationHms } from "./formatYoutubeStats";
 import {
   nextStitchedTimelineState,
@@ -37,18 +39,63 @@ type Props = {
   onViewCountUpdated?: (viewCount: number) => void;
   title?: string;
   onBack?: () => void;
+  subtitles?: SubtitleItem[];
+  audioTracks?: AudioTrack[];
 };
 
-export function VideoPlayer({
-  manifestUrl,
-  streamUrl,
-  videoId,
-  viewerKey,
-  durationSeconds,
-  viewApiOrigin,
+type SubtitleEntry = {
+  start: number;
+  end: number;
+  text: string;
+};
+
+function parseSrtTime(s: string): number {
+  const parts = s.replace(",", ".").split(":");
+  const secondsParts = parts[2].split(".");
+  return (
+    parseInt(parts[0]) * 3600 +
+    parseInt(parts[1]) * 60 +
+    parseInt(secondsParts[0]) +
+    parseInt(secondsParts[1]) / 1000
+  );
+}
+
+function parseSrt(content: string): SubtitleEntry[] {
+  const entries: SubtitleEntry[] = [];
+  const normalized = content.replace(/\r\n/g, "\n").trim();
+  const blocks = normalized.split(/\n\s*\n/);
+  const timeRegex = /(\d{1,2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[.,]\d{3})/;
+
+  for (const block of blocks) {
+    const lines = block.trim().split("\n");
+    if (lines.length < 2) continue;
+    let timeLineIndex = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (timeRegex.test(lines[i])) {
+        timeLineIndex = i;
+        break;
+      }
+    }
+    if (timeLineIndex !== -1 && timeLineIndex + 1 < lines.length) {
+      const match = lines[timeLineIndex].match(timeRegex);
+      if (match) {
+        const start = parseSrtTime(match[1]);
+        const end = parseSrtTime(match[2]);
+        const text = lines.slice(timeLineIndex + 1).join("\n").trim();
+        if (text) {
+          entries.push({ start, end, text });
+        }
+      }
+    }
+  }
+  return entries;
+}
+
   onViewCountUpdated,
   title,
   onBack,
+  subtitles = [],
+  audioTracks = [],
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -74,6 +121,13 @@ export function VideoPlayer({
   const scrubbingRef = useRef(false);
   const [chromeVisible, setChromeVisible] = useState(true);
   const chromeTimerRef = useRef<number | null>(null);
+
+  const [selectedSubtitle, setSelectedSubtitle] = useState<SubtitleItem | null>(null);
+  const [subtitlesData, setSubtitlesData] = useState<SubtitleEntry[]>([]);
+  const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
+
+  const [selectedAudioTrack, setSelectedAudioTrack] = useState<number>(0);
+  const [showAudioMenu, setShowAudioMenu] = useState(false);
 
   const showChrome = useCallback(() => {
     setChromeVisible(true);
@@ -118,7 +172,38 @@ export function VideoPlayer({
     setScrubbing(false);
     setProgress({ current: 0, duration: 0 });
     setPlaying(false);
+    setSelectedSubtitle(null);
+    setSubtitlesData([]);
+    setSelectedAudioTrack(0);
   }, [manifestUrl, streamUrl, videoId]);
+
+  useEffect(() => {
+    if (!selectedSubtitle) {
+      setSubtitlesData([]);
+      return;
+    }
+    let cancelled = false;
+    void fetch(selectedSubtitle.url)
+      .then((res) => res.text())
+      .then((text) => {
+        if (!cancelled) {
+          setSubtitlesData(parseSrt(text));
+        }
+      })
+      .catch((e) => {
+        console.error("Error loading subtitles:", e);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSubtitle]);
+
+  const currentSubtitleText = useMemo(() => {
+    if (subtitlesData.length === 0) return "";
+    const t = progress.current;
+    const entry = subtitlesData.find((s) => t >= s.start && t <= s.end);
+    return entry ? entry.text : "";
+  }, [subtitlesData, progress.current]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -476,6 +561,19 @@ export function VideoPlayer({
             togglePlay();
           }}
         />
+
+        {currentSubtitleText ? (
+          <div
+            className="detail-player-subtitle-overlay"
+            style={{ bottom: chromeVisible ? "160px" : "60px" }}
+          >
+            <div
+              className="detail-player-subtitle-box"
+              dangerouslySetInnerHTML={{ __html: currentSubtitleText }}
+            />
+          </div>
+        ) : null}
+
         <div className={"detail-player-chrome" + (chromeVisible ? "" : " detail-player-chrome--hidden")}>
           <div className="detail-player-seek-row">
             <div className="detail-player-seek-wrap">
@@ -689,6 +787,113 @@ export function VideoPlayer({
                   <Maximize size={iconSize} strokeWidth={iconStroke} aria-hidden />
                 )}
               </button>
+              {audioTracks.length > 1 ? (
+                <div style={{ position: "relative" }}>
+                  <button
+                    type="button"
+                    className="detail-player-icon-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowAudioMenu(!showAudioMenu);
+                    }}
+                    aria-label="Pista de Audio"
+                  >
+                    <AudioLines size={iconSize} strokeWidth={iconStroke} aria-hidden />
+                  </button>
+                  {showAudioMenu ? (
+                    <div className="detail-player-subtitle-menu">
+                      {audioTracks.map((t) => (
+                        <button
+                          key={t.index}
+                          type="button"
+                          className={
+                            "detail-player-subtitle-menu-item" +
+                            (selectedAudioTrack === t.index ? " is-active" : "")
+                          }
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedAudioTrack(t.index);
+                            if (hlsRef.current) {
+                              hlsRef.current.audioTrack = t.index;
+                            } else if (videoRef.current) {
+                              const v = videoRef.current;
+                              const time = v.currentTime;
+                              const playing = !v.paused;
+                              const url = new URL(v.src);
+                              url.searchParams.set("audio_track", t.index.toString());
+                              v.src = url.toString();
+                              v.currentTime = time;
+                              if (playing) void v.play();
+                            }
+                            setShowAudioMenu(false);
+                          }}
+                        >
+                          {t.label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {subtitles.length > 0 ? (
+                <div style={{ position: "relative" }}>
+                  <button
+                    type="button"
+                    className={
+                      "detail-player-icon-btn" +
+                      (selectedSubtitle ? " detail-player-icon-btn--active" : "")
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowSubtitleMenu(!showSubtitleMenu);
+                    }}
+                    aria-label="Subtítulos"
+                  >
+                    <Captions
+                      size={iconSize}
+                      strokeWidth={iconStroke}
+                      aria-hidden
+                      style={{ color: selectedSubtitle ? "#3ea6ff" : "inherit" }}
+                    />
+                  </button>
+                  {showSubtitleMenu ? (
+                    <div className="detail-player-subtitle-menu">
+                      <button
+                        type="button"
+                        className={
+                          "detail-player-subtitle-menu-item" +
+                          (!selectedSubtitle ? " is-active" : "")
+                        }
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedSubtitle(null);
+                          setShowSubtitleMenu(false);
+                        }}
+                      >
+                        Desactivados
+                      </button>
+                      {subtitles.map((s) => (
+                        <button
+                          key={s.id}
+                          type="button"
+                          className={
+                            "detail-player-subtitle-menu-item" +
+                            (selectedSubtitle?.id === s.id ? " is-active" : "")
+                          }
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedSubtitle(s);
+                            setShowSubtitleMenu(false);
+                          }}
+                        >
+                          {s.label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

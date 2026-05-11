@@ -374,6 +374,13 @@ type videoDTO struct {
 	Compat          *compatDTO     `json:"compat,omitempty"`
 	Transcode       *transcodeDTO  `json:"transcode,omitempty"`
 	Subtitles       []subtitleDTO  `json:"subtitles,omitempty"`
+	AudioTracks     []audioTrackDTO `json:"audioTracks,omitempty"`
+}
+
+type audioTrackDTO struct {
+	Index int    `json:"index"`
+	Label string `json:"label"`
+	Codec string `json:"codec"`
 }
 
 type sourceDTO struct {
@@ -553,7 +560,20 @@ func (s *Server) toVideoDTO(ctx context.Context, v store.Video, publicBase, nid 
 		Compat:          compat,
 		Transcode:       tc,
 		Subtitles:       s.findSubtitles(&v, base),
+		AudioTracks:     s.getAudioTracks(ctx, v.ID),
 	}, nil
+}
+
+func (s *Server) getAudioTracks(ctx context.Context, videoID string) []audioTrackDTO {
+	mi, err := s.store.GetMediaInfo(ctx, videoID)
+	if err != nil || mi == nil || mi.AudioTracks == "" {
+		return nil
+	}
+	var tracks []audioTrackDTO
+	if err := json.Unmarshal([]byte(mi.AudioTracks), &tracks); err != nil {
+		return nil
+	}
+	return tracks
 }
 
 func (s *Server) findSubtitles(v *store.Video, base string) []subtitleDTO {
@@ -579,7 +599,9 @@ func (s *Server) findSubtitles(v *store.Video, base string) []subtitleDTO {
 			continue
 		}
 		name := f.Name()
-		if strings.HasPrefix(name, baseName) && strings.ToLower(filepath.Ext(name)) == ".srt" {
+		nameLower := strings.ToLower(name)
+		baseNameLower := strings.ToLower(baseName)
+		if strings.HasPrefix(nameLower, baseNameLower) && strings.ToLower(filepath.Ext(name)) == ".srt" {
 			label := "Subtítulo"
 			suffix := strings.TrimPrefix(strings.TrimSuffix(name, ".srt"), baseName)
 			if suffix != "" {
@@ -626,8 +648,9 @@ func (s *Server) handleGetSubtitle(w http.ResponseWriter, r *http.Request) {
 	var srtFiles []string
 	files, _ := os.ReadDir(dir)
 	for _, f := range files {
-		if !f.IsDir() && strings.HasPrefix(f.Name(), baseName) && strings.ToLower(filepath.Ext(f.Name())) == ".srt" {
-			srtFiles = append(srtFiles, f.Name())
+		name := f.Name()
+		if !f.IsDir() && strings.HasPrefix(strings.ToLower(name), strings.ToLower(baseName)) && strings.ToLower(filepath.Ext(name)) == ".srt" {
+			srtFiles = append(srtFiles, name)
 		}
 	}
 
@@ -1124,7 +1147,44 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	root := filepath.Clean(roots[v.RootIndex])
-	osFile, err := openUnderRoot(root, v.RelPath)
+	absPath, err := resolveVideoPath(root, v.RelPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	audioTrackStr := r.URL.Query().Get("audio_track")
+	if audioTrackStr != "" {
+		trackIdx, err := strconv.Atoi(audioTrackStr)
+		if err == nil {
+			// Serve via ffmpeg pipe to remap audio track
+			w.Header().Set("Content-Type", "video/mp4") // Assume MP4 for the pipe
+			w.Header().Set("Transfer-Encoding", "chunked")
+			
+			// We need to find which audio stream index this corresponds to.
+			// Our audioTrack indices are 0-based based on the order in ffprobe.
+			// But ffmpeg -map 0:a:N is also 0-based among audio tracks.
+			cmd := exec.CommandContext(ctx, "ffmpeg",
+				"-hide_banner", "-loglevel", "error",
+				"-i", absPath,
+				"-map", "0:v:0",
+				"-map", fmt.Sprintf("0:a:%d", trackIdx),
+				"-c:v", "copy",
+				"-c:a", "aac", // Transcode to AAC to ensure compatibility
+				"-f", "mp4",
+				"-movflags", "frag_keyframe+empty_moov+default_base_moof",
+				"pipe:1",
+			)
+			cmd.Stdout = w
+			if err := cmd.Run(); err != nil {
+				// Too late to change header, but we stop
+				return
+			}
+			return
+		}
+	}
+
+	osFile, err := os.Open(absPath)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -1142,6 +1202,24 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Accept-Ranges", "bytes")
 	http.ServeContent(w, r, filepath.Base(v.RelPath), st.ModTime(), osFile)
+}
+
+func resolveVideoPath(root, rel string) (string, error) {
+	root = filepath.Clean(root)
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	p := filepath.Join(rootAbs, filepath.FromSlash(rel))
+	p, err = filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	relToRoot, err := filepath.Rel(rootAbs, p)
+	if err != nil || strings.HasPrefix(relToRoot, "..") {
+		return "", fmt.Errorf("path escape")
+	}
+	return p, nil
 }
 
 func (s *Server) handlePostView(w http.ResponseWriter, r *http.Request) {

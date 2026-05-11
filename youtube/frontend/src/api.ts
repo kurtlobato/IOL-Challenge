@@ -45,6 +45,18 @@ function apiPrefix(): string {
   return `${b}/api`;
 }
 
+export type SubtitleItem = {
+  id: number;
+  label: string;
+  url: string;
+};
+
+export type AudioTrack = {
+  index: number;
+  label: string;
+  codec: string;
+};
+
 export type SeriesRef = {
   id: string;
   nodeId: string;
@@ -94,6 +106,8 @@ export type VideoItem = {
     queuePosition?: number | null;
     outTimeMs?: number | null;
   } | null;
+  subtitles: SubtitleItem[];
+  audioTracks: AudioTrack[];
 };
 
 export type SeriesItem = {
@@ -331,6 +345,8 @@ function normalizeVideo(v: VideoItem): VideoItem {
     source: v.source ?? null,
     compat: v.compat ?? null,
     transcode: v.transcode ?? null,
+    subtitles: v.subtitles ?? [],
+    audioTracks: v.audioTracks ?? [],
   };
 }
 

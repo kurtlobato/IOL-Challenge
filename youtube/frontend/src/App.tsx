@@ -792,6 +792,8 @@ export default function App() {
                 onViewCountUpdated={(c) => patchViewCount(selected.id, c)}
                 title={selected.title}
                 onBack={closeWatch}
+                subtitles={selected.subtitles}
+                audioTracks={selected.audioTracks}
               />
             ) : (
               <div className="watch-placeholder">

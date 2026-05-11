@@ -1553,3 +1553,88 @@ body {
 .series-create-overlay {
   z-index: 10070;
 }
+
+/* ─── SUBTITLES ──────────────────────────────────────────── */
+.detail-player-subtitle-overlay {
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  transition: bottom 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 10;
+}
+
+.detail-player-subtitle-box {
+  background: transparent;
+  color: #fff;
+  padding: 0;
+  border-radius: 0;
+  font-size: 2rem;
+  text-align: center;
+  line-height: 1.25;
+  white-space: pre-wrap;
+  text-shadow: 
+    -2px -2px 0 #000,  
+     2px -2px 0 #000,
+    -2px  2px 0 #000,
+     2px  2px 0 #000,
+     0px 2px 4px rgba(0,0,0,0.8);
+  font-weight: 600;
+  max-width: 90%;
+}
+
+@media (max-width: 768px) {
+  .detail-player-subtitle-box {
+    font-size: 1.1rem;
+    padding: 6px 14px;
+  }
+}
+
+.detail-player-subtitle-menu {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 12px;
+  background: #1a1a1a;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 6px 0;
+  min-width: 200px;
+  z-index: 100;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+  animation: subtitleMenuFadeIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes subtitleMenuFadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.detail-player-subtitle-menu-item {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  text-align: left;
+  background: transparent;
+  color: #eee;
+  border: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background 0.15s;
+}
+
+.detail-player-subtitle-menu-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.detail-player-subtitle-menu-item.is-active {
+  background: rgba(62, 166, 255, 0.15);
+  color: #3ea6ff;
+  font-weight: 600;
+}
+
+.detail-player-icon-btn--active {
+  color: #3ea6ff !important;
+}

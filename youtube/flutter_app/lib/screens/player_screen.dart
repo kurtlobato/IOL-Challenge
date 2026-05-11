@@ -27,6 +27,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   int _lastReportedSeconds = 0;
   bool _showControls = true;
   double _volume = 1.0;
+  int _selectedAudioTrack = 0;
   
   SubtitleItem? _currentSubtitle;
   final FocusNode _playPauseFocusNode = FocusNode();
@@ -57,8 +58,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   Future<void> _initController() async {
-    final uri = widget.video.playbackUri;
+    var uri = widget.video.playbackUri;
     if (uri == null || uri.isEmpty) return;
+
+    if (_selectedAudioTrack > 0) {
+      final connector = uri.contains('?') ? '&' : '?';
+      uri = '$uri${connector}audio_track=$_selectedAudioTrack';
+    }
 
     Future<ClosedCaptionFile>? captionFile;
     if (_currentSubtitle != null) {
@@ -101,7 +107,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     try {
       final response = await http.get(Uri.parse(url));
       if (response.statusCode == 200) {
-        final content = utf8.decode(response.bodyBytes);
+        String content;
+        try {
+          content = utf8.decode(response.bodyBytes);
+        } catch (_) {
+          // Fallback para archivos con codificación antigua (latin1/iso-8859-1)
+          content = latin1.decode(response.bodyBytes);
+        }
         return _SrtCaptionFile(content);
       }
     } catch (e) {
@@ -189,6 +201,53 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final minutes = twoDigits(duration.inMinutes.remainder(60));
     final seconds = twoDigits(duration.inSeconds.remainder(60));
     return hours > 0 ? "$hours:$minutes:$seconds" : "$minutes:$seconds";
+  }
+
+  void _showAudioMenu() {
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Pista de Audio', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        content: SizedBox(
+          width: 350,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _SubtitleTile(
+                  label: 'Por defecto',
+                  isSelected: _selectedAudioTrack == 0,
+                  onTap: () {
+                    Navigator.pop(context);
+                    if (_selectedAudioTrack != 0) {
+                      setState(() => _selectedAudioTrack = 0);
+                      _initController();
+                    }
+                  },
+                ),
+                const Divider(color: Colors.white10),
+                ...widget.video.audioTracks.map((t) => _SubtitleTile(
+                  label: t.label,
+                  isSelected: _selectedAudioTrack == t.index,
+                  onTap: () {
+                    Navigator.pop(context);
+                    if (_selectedAudioTrack != t.index) {
+                      setState(() => _selectedAudioTrack = t.index);
+                      _initController();
+                    }
+                  },
+                )),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ).then((_) {
+      _playPauseFocusNode.requestFocus();
+    });
   }
 
   void _seekRelative(int seconds) {
@@ -294,22 +353,20 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                       bottom: _showControls ? 160 : 60,
                       left: 100,
                       right: 100,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.7),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          c.value.caption.text,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            fontSize: 30,
-                            color: Colors.white,
-                            height: 1.2,
-                            fontWeight: FontWeight.w500,
-                            shadows: [Shadow(offset: Offset(0, 2), blurRadius: 6, color: Colors.black)],
-                          ),
+                      child: Text(
+                        c.value.caption.text,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 34,
+                          color: Colors.white,
+                          height: 1.2,
+                          fontWeight: FontWeight.bold,
+                          shadows: [
+                            Shadow(offset: Offset(-2, -2), color: Colors.black),
+                            Shadow(offset: Offset(2, -2), color: Colors.black),
+                            Shadow(offset: Offset(-2, 2), color: Colors.black),
+                            Shadow(offset: Offset(2, 2), color: Colors.black),
+                          ],
                         ),
                       ),
                     ),
@@ -377,6 +434,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                             ],
                                           ),
                                         ),
+                                        if (widget.video.audioTracks.isNotEmpty)
+                                          _TopButton(
+                                            icon: Icons.audiotrack,
+                                            active: _selectedAudioTrack > 0,
+                                            onTap: _showAudioMenu,
+                                          ),
+                                        if (widget.video.audioTracks.isNotEmpty)
+                                          const SizedBox(width: 12),
                                         if (widget.video.subtitles.isNotEmpty)
                                           _TopButton(
                                             icon: _currentSubtitle != null 
@@ -596,7 +661,9 @@ class _SrtCaptionFile extends ClosedCaptionFile {
         final match = timeRegex.firstMatch(lines[timeLineIndex])!;
         final start = _parseSrtTime(match.group(1)!);
         final end = _parseSrtTime(match.group(2)!);
-        final text = lines.sublist(timeLineIndex + 1).join('\n').trim();
+        var text = lines.sublist(timeLineIndex + 1).join('\n').trim();
+        // Eliminar etiquetas HTML como <i></i> o <b></b>
+        text = text.replaceAll(RegExp(r'<[^>]*>'), '');
         if (text.isNotEmpty) {
           captions.add(Caption(number: captions.length, start: start, end: end, text: text));
         }
