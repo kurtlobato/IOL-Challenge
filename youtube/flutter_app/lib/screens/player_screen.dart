@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -28,13 +29,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   double _volume = 1.0;
   
   SubtitleItem? _currentSubtitle;
-  final FocusNode _mainFocusNode = FocusNode();
+  final FocusNode _playPauseFocusNode = FocusNode();
+  final FocusScopeNode _focusScopeNode = FocusScopeNode();
 
   @override
   void initState() {
     super.initState();
     _bootstrap();
     _startHideControlsTimer();
+    
+    // Forzar el foco inicial en el reproductor
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _playPauseFocusNode.requestFocus();
+      }
+    });
   }
 
   Future<void> _bootstrap() async {
@@ -51,7 +60,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final uri = widget.video.playbackUri;
     if (uri == null || uri.isEmpty) return;
 
-    // Si hay un subtítulo seleccionado, lo cargamos
     Future<ClosedCaptionFile>? captionFile;
     if (_currentSubtitle != null) {
       captionFile = _loadSubtitle(_currentSubtitle!.url);
@@ -74,20 +82,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       await c.play();
       await WakelockPlus.enable();
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
-        );
-      }
+      debugPrint('Player error: $e');
     }
 
     if (oldController != null) {
       oldController.removeListener(_onVideoUpdate);
-      // Pequeño delay para evitar parpadeo antes de dispose
-      Future.delayed(const Duration(milliseconds: 200), () => oldController.dispose());
+      Future.delayed(const Duration(milliseconds: 500), () => oldController.dispose());
     }
     
-    if (mounted) setState(() {});
+    if (mounted) {
+      setState(() {});
+      // Asegurar que el foco no se pierda al reconstruir
+      _playPauseFocusNode.requestFocus();
+    }
   }
 
   Future<ClosedCaptionFile> _loadSubtitle(String url) async {
@@ -110,7 +117,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void _startHideControlsTimer() {
     _hideControlsTimer?.cancel();
     _hideControlsTimer = Timer(const Duration(seconds: 5), () {
-      if (mounted && _controller != null && _controller!.value.isPlaying) {
+      if (mounted && _controller != null && _controller!.value.isPlaying && _showControls) {
         setState(() {
           _showControls = false;
         });
@@ -123,6 +130,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       setState(() {
         _showControls = true;
       });
+    }
+    // Siempre asegurar que algo tiene el foco cuando se muestran los controles
+    if (!_playPauseFocusNode.hasFocus) {
+      _playPauseFocusNode.requestFocus();
     }
     _startHideControlsTimer();
   }
@@ -145,8 +156,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     setState(() {
       _currentSubtitle = sub;
     });
-    _initController(); // Reinicializar para cargar el nuevo subtítulo
-    _showControlsTemporarily();
+    _initController();
   }
 
   Future<void> _reportView(String viewerKey) async {
@@ -165,7 +175,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void dispose() {
     _viewTimer?.cancel();
     _hideControlsTimer?.cancel();
-    _mainFocusNode.dispose();
+    _playPauseFocusNode.dispose();
+    _focusScopeNode.dispose();
     WakelockPlus.disable();
     _controller?.removeListener(_onVideoUpdate);
     _controller?.dispose();
@@ -187,6 +198,48 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _showControlsTemporarily();
   }
 
+  void _showSubtitleMenu() {
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Subtítulos', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        content: SizedBox(
+          width: 350,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _SubtitleTile(
+                  label: 'Desactivados',
+                  isSelected: _currentSubtitle == null,
+                  onTap: () {
+                    Navigator.pop(context);
+                    _selectSubtitle(null);
+                  },
+                ),
+                const Divider(color: Colors.white10),
+                ...widget.video.subtitles.map((s) => _SubtitleTile(
+                  label: s.label,
+                  isSelected: _currentSubtitle == s,
+                  onTap: () {
+                    Navigator.pop(context);
+                    _selectSubtitle(s);
+                  },
+                )),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ).then((_) {
+      // Obligar al foco a volver al botón central al cerrar el diálogo
+      _playPauseFocusNode.requestFocus();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -195,218 +248,229 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Focus(
-        focusNode: _mainFocusNode,
-        autofocus: true,
-        onKeyEvent: (node, event) {
-          if (event is KeyDownEvent) {
-            _showControlsTemporarily();
-            if (event.logicalKey == LogicalKeyboardKey.select ||
-                event.logicalKey == LogicalKeyboardKey.enter ||
-                event.logicalKey == LogicalKeyboardKey.space) {
-              _togglePlayPause();
-              return KeyEventResult.handled;
-            } else if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-              _seekRelative(-10);
-              return KeyEventResult.handled;
-            } else if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-              _seekRelative(10);
-              return KeyEventResult.handled;
-            } else if (event.logicalKey == LogicalKeyboardKey.escape ||
-                       event.logicalKey == LogicalKeyboardKey.backspace) {
-              if (_showControls) {
-                setState(() => _showControls = false);
-              } else {
-                Navigator.of(context).pop();
-              }
-              return KeyEventResult.handled;
-            }
-          }
-          return KeyEventResult.ignored;
+      body: Shortcuts(
+        shortcuts: <LogicalKeySet, Intent>{
+          LogicalKeySet(LogicalKeyboardKey.select): const ActivateIntent(),
+          LogicalKeySet(LogicalKeyboardKey.enter): const ActivateIntent(),
+          LogicalKeySet(LogicalKeyboardKey.space): const ActivateIntent(),
         },
-        child: GestureDetector(
-          onTap: _showControlsTemporarily,
-          behavior: HitTestBehavior.opaque,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              if (isInitialized)
-                Center(
-                  child: AspectRatio(
-                    aspectRatio: c.value.aspectRatio == 0 ? 16 / 9 : c.value.aspectRatio,
-                    child: VideoPlayer(c),
-                  ),
-                )
-              else
-                const Center(child: CircularProgressIndicator(color: Colors.white24)),
+        child: FocusScope(
+          node: _focusScopeNode,
+          child: Focus(
+            onKeyEvent: (node, event) {
+              if (event is KeyDownEvent) {
+                // Cualquier tecla del mando despierta los controles
+                _showControlsTemporarily();
+                
+                if (event.logicalKey == LogicalKeyboardKey.escape ||
+                    event.logicalKey == LogicalKeyboardKey.backspace) {
+                  if (_showControls) {
+                    setState(() => _showControls = false);
+                    return KeyEventResult.handled;
+                  }
+                }
+              }
+              return KeyEventResult.ignored;
+            },
+            child: GestureDetector(
+              onTap: _showControlsTemporarily,
+              behavior: HitTestBehavior.opaque,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (isInitialized)
+                    Center(
+                      child: AspectRatio(
+                        aspectRatio: c.value.aspectRatio == 0 ? 16 / 9 : c.value.aspectRatio,
+                        child: VideoPlayer(c),
+                      ),
+                    )
+                  else
+                    const Center(child: CircularProgressIndicator(color: Colors.white24)),
 
-              // Subtitles Layer (Built-in Flutter VideoPlayer display)
-              if (isInitialized && _currentSubtitle != null)
-                Positioned(
-                  bottom: _showControls ? 140 : 40,
-                  left: 20,
-                  right: 20,
-                  child: ClosedCaption(
-                    text: c.value.caption.text,
-                    textStyle: const TextStyle(
-                      fontSize: 24,
-                      color: Colors.white,
-                      backgroundColor: Colors.black54,
-                    ),
-                  ),
-                ),
-
-              // Controls Overlay
-              if (isInitialized)
-                IgnorePointer(
-                  ignoring: !_showControls,
-                  child: AnimatedOpacity(
-                    opacity: _showControls ? 1.0 : 0.0,
-                    duration: const Duration(milliseconds: 300),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [
-                            Colors.black.withOpacity(0.9),
-                            Colors.transparent,
-                            Colors.transparent,
-                            Colors.black.withOpacity(0.9),
-                          ],
-                          stops: const [0.0, 0.25, 0.75, 1.0],
+                  // Subtitles Layer
+                  if (isInitialized && _currentSubtitle != null && c.value.caption.text.isNotEmpty)
+                    Positioned(
+                      bottom: _showControls ? 160 : 60,
+                      left: 100,
+                      right: 100,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.7),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          c.value.caption.text,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontSize: 30,
+                            color: Colors.white,
+                            height: 1.2,
+                            fontWeight: FontWeight.w500,
+                            shadows: [Shadow(offset: Offset(0, 2), blurRadius: 6, color: Colors.black)],
+                          ),
                         ),
                       ),
-                      child: Stack(
-                        children: [
-                          // Top Bar
-                          Positioned(
-                            top: 0,
-                            left: 0,
-                            right: 0,
-                            child: SafeArea(
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
-                                child: Row(
-                                  children: [
-                                    IconButton(
-                                      icon: const Icon(Icons.close, color: Colors.white, size: 32),
-                                      onPressed: () => Navigator.of(context).pop(),
-                                    ),
-                                    const SizedBox(width: 16),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            widget.video.title,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 22,
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                          if (widget.video.nodeName != null)
-                                            Text(
-                                              'Nodo: ${widget.video.nodeName!}',
-                                              style: TextStyle(
-                                                color: Colors.white.withOpacity(0.5),
-                                                fontSize: 14,
-                                              ),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                    // Subtitles Button
-                                    if (widget.video.subtitles.isNotEmpty)
-                                      _SubtitleSelector(
-                                        options: widget.video.subtitles,
-                                        selected: _currentSubtitle,
-                                        onSelected: _selectSubtitle,
-                                      ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
+                    ),
 
-                          // Center Controls
-                          Center(
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                _ControlButton(
-                                  icon: Icons.replay_10,
-                                  onTap: () => _seekRelative(-10),
-                                ),
-                                const SizedBox(width: 56),
-                                _ControlButton(
-                                  icon: c.value.isPlaying ? Icons.pause : Icons.play_arrow,
-                                  size: 84,
-                                  isPrimary: true,
-                                  onTap: _togglePlayPause,
-                                ),
-                                const SizedBox(width: 56),
-                                _ControlButton(
-                                  icon: Icons.forward_10,
-                                  onTap: () => _seekRelative(10),
-                                ),
+                  // Controls Overlay
+                  if (isInitialized)
+                    AnimatedOpacity(
+                      opacity: _showControls ? 1.0 : 0.0,
+                      duration: const Duration(milliseconds: 300),
+                      child: IgnorePointer(
+                        ignoring: !_showControls,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [
+                                Colors.black.withOpacity(0.9),
+                                Colors.transparent,
+                                Colors.transparent,
+                                Colors.black.withOpacity(0.9),
                               ],
+                              stops: const [0.0, 0.25, 0.75, 1.0],
                             ),
                           ),
-
-                          // Bottom Bar
-                          Positioned(
-                            bottom: 0,
-                            left: 0,
-                            right: 0,
-                            child: SafeArea(
-                              child: Padding(
-                                padding: const EdgeInsets.fromLTRB(48, 0, 48, 48),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    SliderTheme(
-                                      data: SliderTheme.of(context).copyWith(
-                                        trackHeight: 6,
-                                        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
-                                        activeTrackColor: theme.colorScheme.primary,
-                                        inactiveTrackColor: Colors.white24,
-                                        thumbColor: theme.colorScheme.primary,
-                                      ),
-                                      child: Slider(
-                                        value: c.value.position.inSeconds.toDouble(),
-                                        max: c.value.duration.inSeconds.toDouble().clamp(1, double.infinity),
-                                        onChanged: (val) {
-                                          c.seekTo(Duration(seconds: val.toInt()));
-                                          _showControlsTemporarily();
-                                        },
-                                      ),
+                          child: Stack(
+                            children: [
+                              // Top Bar
+                              Positioned(
+                                top: 0,
+                                left: 0,
+                                right: 0,
+                                child: SafeArea(
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 32),
+                                    child: Row(
+                                      children: [
+                                        _TopButton(
+                                          icon: Icons.arrow_back,
+                                          onTap: () => Navigator.of(context).pop(),
+                                        ),
+                                        const SizedBox(width: 24),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                widget.video.title,
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 26,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                              if (widget.video.nodeName != null)
+                                                Text(
+                                                  'Fuente: ${widget.video.nodeName!}',
+                                                  style: TextStyle(
+                                                    color: Colors.white.withOpacity(0.5),
+                                                    fontSize: 16,
+                                                  ),
+                                                ),
+                                            ],
+                                          ),
+                                        ),
+                                        if (widget.video.subtitles.isNotEmpty)
+                                          _TopButton(
+                                            icon: _currentSubtitle != null 
+                                                ? Icons.closed_caption 
+                                                : Icons.closed_caption_disabled,
+                                            active: _currentSubtitle != null,
+                                            onTap: _showSubtitleMenu,
+                                          ),
+                                      ],
                                     ),
-                                    const SizedBox(height: 8),
-                                    Padding(
-                                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                                      child: Row(
-                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          Text(_formatDuration(c.value.position), style: const TextStyle(color: Colors.white, fontSize: 16)),
-                                          Text(_formatDuration(c.value.duration), style: const TextStyle(color: Colors.white, fontSize: 16)),
-                                        ],
-                                      ),
+                                  ),
+                                ),
+                              ),
+
+                              // Center Controls
+                              Center(
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    _ControlButton(
+                                      icon: Icons.replay_10,
+                                      onTap: () => _seekRelative(-10),
+                                    ),
+                                    const SizedBox(width: 70),
+                                    _ControlButton(
+                                      focusNode: _playPauseFocusNode,
+                                      icon: c.value.isPlaying ? Icons.pause : Icons.play_arrow,
+                                      size: 96,
+                                      isPrimary: true,
+                                      onTap: _togglePlayPause,
+                                    ),
+                                    const SizedBox(width: 70),
+                                    _ControlButton(
+                                      icon: Icons.forward_10,
+                                      onTap: () => _seekRelative(10),
                                     ),
                                   ],
                                 ),
                               ),
-                            ),
+
+                              // Bottom Bar
+                              Positioned(
+                                bottom: 0,
+                                left: 0,
+                                right: 0,
+                                child: SafeArea(
+                                  child: Padding(
+                                    padding: const EdgeInsets.fromLTRB(64, 0, 64, 64),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        SliderTheme(
+                                          data: SliderTheme.of(context).copyWith(
+                                            trackHeight: 8,
+                                            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 12),
+                                            activeTrackColor: theme.colorScheme.primary,
+                                            inactiveTrackColor: Colors.white24,
+                                            thumbColor: theme.colorScheme.primary,
+                                          ),
+                                          child: Slider(
+                                            value: c.value.position.inSeconds.toDouble(),
+                                            max: c.value.duration.inSeconds.toDouble().clamp(1, double.infinity),
+                                            onChanged: (val) {
+                                              c.seekTo(Duration(seconds: val.toInt()));
+                                              _showControlsTemporarily();
+                                            },
+                                          ),
+                                        ),
+                                        const SizedBox(height: 12),
+                                        Padding(
+                                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                                          child: Row(
+                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                            children: [
+                                              Text(_formatDuration(c.value.position), 
+                                                style: const TextStyle(color: Colors.white, fontSize: 20, fontFeatures: [FontFeature.tabularFigures()])),
+                                              Text(_formatDuration(c.value.duration), 
+                                                style: const TextStyle(color: Colors.white, fontSize: 20, fontFeatures: [FontFeature.tabularFigures()])),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
+                        ),
                       ),
                     ),
-                  ),
-                ),
-            ],
+                ],
+              ),
+            ),
           ),
         ),
       ),
@@ -414,40 +478,57 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 }
 
-class _SubtitleSelector extends StatelessWidget {
-  final List<SubtitleItem> options;
-  final SubtitleItem? selected;
-  final Function(SubtitleItem?) onSelected;
+class _SubtitleTile extends StatelessWidget {
+  final String label;
+  final bool isSelected;
+  final VoidCallback onTap;
 
-  const _SubtitleSelector({
-    required this.options,
-    required this.selected,
-    required this.onSelected,
+  const _SubtitleTile({
+    required this.label,
+    required this.isSelected,
+    required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return PopupMenuButton<SubtitleItem?>(
-      icon: Icon(
-        selected != null ? Icons.closed_caption : Icons.closed_caption_disabled,
-        color: selected != null ? Theme.of(context).colorScheme.primary : Colors.white,
-        size: 32,
-      ),
-      tooltip: 'Subtítulos',
-      onSelected: onSelected,
-      color: const Color(0xFF222222),
-      itemBuilder: (context) => [
-        const PopupMenuItem<SubtitleItem?>(
-          value: null,
-          child: Text('Desactivados', style: TextStyle(color: Colors.white)),
+    return ListTile(
+      autofocus: isSelected, // Ayuda al mando a posicionarse en la opción actual
+      title: Text(label, style: const TextStyle(color: Colors.white, fontSize: 20)),
+      trailing: isSelected ? Icon(Icons.check_circle, color: Theme.of(context).colorScheme.primary) : null,
+      onTap: onTap,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      hoverColor: Colors.white.withOpacity(0.1),
+    );
+  }
+}
+
+class _TopButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+  final bool active;
+
+  const _TopButton({
+    required this.icon,
+    required this.onTap,
+    this.active = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(40),
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withOpacity(0.05),
+          ),
+          child: Icon(icon, color: active ? Theme.of(context).colorScheme.primary : Colors.white, size: 36),
         ),
-        ...options.map((s) => PopupMenuItem<SubtitleItem?>(
-          value: s,
-          child: Text(s.label, style: TextStyle(
-            color: s == selected ? Theme.of(context).colorScheme.primary : Colors.white,
-          )),
-        )),
-      ],
+      ),
     );
   }
 }
@@ -457,12 +538,14 @@ class _ControlButton extends StatelessWidget {
   final double size;
   final VoidCallback onTap;
   final bool isPrimary;
+  final FocusNode? focusNode;
 
   const _ControlButton({
     required this.icon,
-    this.size = 52,
+    this.size = 60,
     required this.onTap,
     this.isPrimary = false,
+    this.focusNode,
   });
 
   @override
@@ -470,13 +553,14 @@ class _ControlButton extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: InkWell(
+        focusNode: focusNode,
         onTap: onTap,
         borderRadius: BorderRadius.circular(size),
         child: Container(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: isPrimary ? Colors.white.withOpacity(0.2) : Colors.white.withOpacity(0.05),
+            color: isPrimary ? Colors.white.withOpacity(0.15) : Colors.white.withOpacity(0.05),
             border: isPrimary ? Border.all(color: Colors.white24, width: 2) : null,
           ),
           child: Icon(icon, color: Colors.white, size: size),
@@ -486,7 +570,6 @@ class _ControlButton extends StatelessWidget {
   }
 }
 
-// Minimal SRT Parser
 class _SrtCaptionFile extends ClosedCaptionFile {
   _SrtCaptionFile(String content) : _captions = _parseSrt(content);
   final List<Caption> _captions;
@@ -495,15 +578,26 @@ class _SrtCaptionFile extends ClosedCaptionFile {
 
   static List<Caption> _parseSrt(String content) {
     final List<Caption> captions = [];
-    final List<String> blocks = content.split('\n\n');
+    final normalized = content.replaceAll('\r\n', '\n').trim();
+    final List<String> blocks = normalized.split(RegExp(r'\n\s*\n'));
+    final timeRegex = RegExp(r'(\d{1,2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[.,]\d{3})');
+
     for (var block in blocks) {
       final lines = block.trim().split('\n');
-      if (lines.length >= 3) {
-        final times = lines[1].split(' --> ');
-        if (times.length == 2) {
-          final start = _parseSrtTime(times[0]);
-          final end = _parseSrtTime(times[1]);
-          final text = lines.sublist(2).join('\n');
+      if (lines.length < 2) continue;
+      int timeLineIndex = -1;
+      for (int i = 0; i < lines.length; i++) {
+        if (timeRegex.hasMatch(lines[i])) {
+          timeLineIndex = i;
+          break;
+        }
+      }
+      if (timeLineIndex != -1 && timeLineIndex + 1 < lines.length) {
+        final match = timeRegex.firstMatch(lines[timeLineIndex])!;
+        final start = _parseSrtTime(match.group(1)!);
+        final end = _parseSrtTime(match.group(2)!);
+        final text = lines.sublist(timeLineIndex + 1).join('\n').trim();
+        if (text.isNotEmpty) {
           captions.add(Caption(number: captions.length, start: start, end: end, text: text));
         }
       }
@@ -512,8 +606,8 @@ class _SrtCaptionFile extends ClosedCaptionFile {
   }
 
   static Duration _parseSrtTime(String s) {
-    final parts = s.split(':');
-    final secondsParts = parts[2].split(',');
+    final parts = s.replaceAll(',', '.').split(':');
+    final secondsParts = parts[2].split('.');
     return Duration(
       hours: int.parse(parts[0]),
       minutes: int.parse(parts[1]),
