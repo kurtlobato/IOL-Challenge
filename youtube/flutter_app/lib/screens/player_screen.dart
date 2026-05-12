@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -31,15 +32,41 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   
   SubtitleItem? _currentSubtitle;
   final FocusNode _playPauseFocusNode = FocusNode();
+  final FocusNode _audioFocusNode = FocusNode();
+  final FocusNode _subtitleFocusNode = FocusNode();
+  final FocusNode _backFocusNode = FocusNode();
+  final FocusNode _restartFocusNode = FocusNode();
   final FocusScopeNode _focusScopeNode = FocusScopeNode();
+
+  SharedPreferences? _prefs;
+  Duration? _savedPosition;
+
+  Future<void> _loadPrefs() async {
+    final p = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    _prefs = p;
+    final savedVol = p.getDouble('lanflix_volume');
+    if (savedVol != null) _volume = savedVol;
+    final savedPos = p.getInt('lanflix_progress_${widget.video.id}');
+    if (savedPos != null) {
+      _savedPosition = Duration(seconds: savedPos);
+    }
+    final savedSub = p.getString('lanflix_subtitle_${widget.video.id}');
+    if (savedSub != null && savedSub.isNotEmpty) {
+      for (final s in widget.video.subtitles) {
+        if (s.url == savedSub) {
+          _currentSubtitle = s;
+          break;
+        }
+      }
+    }
+  }
 
   @override
   void initState() {
     super.initState();
     _bootstrap();
     _startHideControlsTimer();
-    
-    // Forzar el foco inicial en el reproductor
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         _playPauseFocusNode.requestFocus();
@@ -48,6 +75,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   Future<void> _bootstrap() async {
+    await _loadPrefs();
+    if (!mounted) return;
     await _initController();
     
     final viewerKey = await ref.read(viewerKeyProvider.future);
@@ -56,9 +85,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       unawaited(_reportView(viewerKey));
     });
   }
-
   Future<void> _initController() async {
-    var uri = widget.video.playbackUri;
+    // Si se selecciona una pista de audio específica, usamos el stream directo
+    // ya que el backend puede remapearlo al vuelo usando el parámetro audio_track.
+    var uri = _selectedAudioTrack > 0 ? widget.video.streamUrl : widget.video.playbackUri;
     if (uri == null || uri.isEmpty) return;
 
     if (_selectedAudioTrack > 0) {
@@ -82,9 +112,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _controller = c;
     try {
       await c.initialize();
+      // Apply saved volume and position
+      c.setVolume(_volume);
+      if (_savedPosition != null) await c.seekTo(_savedPosition!);
       c.addListener(_onVideoUpdate);
       _volume = c.value.volume;
-      await c.seekTo(position);
       await c.play();
       await WakelockPlus.enable();
     } catch (e) {
@@ -123,6 +155,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   }
 
   void _onVideoUpdate() {
+    // No need to persist on every frame; just trigger UI rebuild.
     if (mounted) setState(() {});
   }
 
@@ -143,8 +176,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         _showControls = true;
       });
     }
-    // Siempre asegurar que algo tiene el foco cuando se muestran los controles
-    if (!_playPauseFocusNode.hasFocus) {
+    // Solo forzar el foco inicial si el ámbito del reproductor no lo tiene
+    // Esto evita que el foco "salte" si el usuario ya está navegando por otros botones
+    if (!_focusScopeNode.hasFocus) {
       _playPauseFocusNode.requestFocus();
     }
     _startHideControlsTimer();
@@ -156,6 +190,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     setState(() {
       if (c.value.isPlaying) {
         c.pause();
+        // Persist position when pausing
+        _prefs?.setInt('lanflix_progress_${widget.video.id}', c.value.position.inSeconds);
       } else {
         c.play();
       }
@@ -168,6 +204,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     setState(() {
       _currentSubtitle = sub;
     });
+    // Persist selected subtitle URL
+    if (sub != null) {
+      _prefs?.setString('lanflix_subtitle_${widget.video.id}', sub.url);
+    } else {
+      _prefs?.remove('lanflix_subtitle_${widget.video.id}');
+    }
     _initController();
   }
 
@@ -185,9 +227,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   @override
   void dispose() {
+    // Save position before disposing
+    if (_controller != null) {
+      _prefs?.setInt('lanflix_progress_${widget.video.id}', _controller!.value.position.inSeconds);
+    }
     _viewTimer?.cancel();
     _hideControlsTimer?.cancel();
     _playPauseFocusNode.dispose();
+    _audioFocusNode.dispose();
+    _subtitleFocusNode.dispose();
+    _backFocusNode.dispose();
+    _restartFocusNode.dispose();
     _focusScopeNode.dispose();
     WakelockPlus.disable();
     _controller?.removeListener(_onVideoUpdate);
@@ -224,6 +274,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                     Navigator.pop(context);
                     if (_selectedAudioTrack != 0) {
                       setState(() => _selectedAudioTrack = 0);
+                      _prefs?.remove('lanflix_audio_${widget.video.id}');
                       _initController();
                     }
                   },
@@ -236,6 +287,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                     Navigator.pop(context);
                     if (_selectedAudioTrack != t.index) {
                       setState(() => _selectedAudioTrack = t.index);
+                      _prefs?.setInt('lanflix_audio_${widget.video.id}', t.index);
                       _initController();
                     }
                   },
@@ -246,7 +298,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         ),
       ),
     ).then((_) {
-      _playPauseFocusNode.requestFocus();
+      _audioFocusNode.requestFocus();
     });
   }
 
@@ -254,6 +306,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     if (_controller == null) return;
     final target = _controller!.value.position + Duration(seconds: seconds);
     _controller!.seekTo(target);
+    _showControlsTemporarily();
+  }
+
+  Future<void> _restartFromBeginning() async {
+    final c = _controller;
+    if (c == null || !c.value.isInitialized) return;
+    _savedPosition = null;
+    _prefs?.remove('lanflix_progress_${widget.video.id}');
+    await c.seekTo(Duration.zero);
+    await c.play();
+    if (!mounted) return;
+    setState(() {});
     _showControlsTemporarily();
   }
 
@@ -294,8 +358,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         ),
       ),
     ).then((_) {
-      // Obligar al foco a volver al botón central al cerrar el diálogo
-      _playPauseFocusNode.requestFocus();
+      _subtitleFocusNode.requestFocus();
     });
   }
 
@@ -405,8 +468,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                     child: Row(
                                       children: [
                                         _TopButton(
+                                          focusNode: _backFocusNode,
                                           icon: Icons.arrow_back,
                                           onTap: () => Navigator.of(context).pop(),
+                                        ),
+                                        const SizedBox(width: 12),
+                                        _TopButton(
+                                          focusNode: _restartFocusNode,
+                                          icon: Icons.restart_alt,
+                                          onTap: () => unawaited(_restartFromBeginning()),
                                         ),
                                         const SizedBox(width: 24),
                                         Expanded(
@@ -436,6 +506,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                         ),
                                         if (widget.video.audioTracks.isNotEmpty)
                                           _TopButton(
+                                            focusNode: _audioFocusNode,
                                             icon: Icons.audiotrack,
                                             active: _selectedAudioTrack > 0,
                                             onTap: _showAudioMenu,
@@ -444,6 +515,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                           const SizedBox(width: 12),
                                         if (widget.video.subtitles.isNotEmpty)
                                           _TopButton(
+                                            focusNode: _subtitleFocusNode,
                                             icon: _currentSubtitle != null 
                                                 ? Icons.closed_caption 
                                                 : Icons.closed_caption_disabled,
@@ -571,11 +643,13 @@ class _TopButton extends StatelessWidget {
   final IconData icon;
   final VoidCallback onTap;
   final bool active;
+  final FocusNode? focusNode;
 
   const _TopButton({
     required this.icon,
     required this.onTap,
     this.active = false,
+    this.focusNode,
   });
 
   @override
@@ -583,6 +657,7 @@ class _TopButton extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: InkWell(
+        focusNode: focusNode,
         onTap: onTap,
         borderRadius: BorderRadius.circular(40),
         child: Container(

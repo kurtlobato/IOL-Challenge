@@ -654,6 +654,22 @@ body {
   height: 100%;
   object-fit: contain;
   cursor: pointer;
+  /* Sin z-index explícito, el compositor de vídeo (p. ej. Electron/Linux) puede tapar el HTML encima. */
+  z-index: 0;
+}
+
+.watch-player .detail-player-subtitle-overlay {
+  /* Por encima del chrome (z-index 20); si no, el gradiente inferior los tapa. */
+  z-index: 22;
+  transform: translateZ(0);
+}
+
+.detail-player-shell:fullscreen .detail-player-subtitle-overlay,
+.detail-player-shell:-webkit-full-screen .detail-player-subtitle-overlay,
+.detail-player-shell:-moz-full-screen .detail-player-subtitle-overlay,
+.detail-player-shell.detail-player-shell--fullscreen .detail-player-subtitle-overlay {
+  z-index: 22;
+  transform: translateZ(0);
 }
 
 .watch-player .detail-player-topbar {

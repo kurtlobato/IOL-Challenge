@@ -199,6 +199,8 @@ func corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", o)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Lanflix-Depth")
+			// Sin esto, caches HTTP pueden devolver ACAO de otro Origin (p. ej. otro puerto en Electron).
+			w.Header().Set("Vary", "Origin")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -660,6 +662,7 @@ func (s *Server) handleGetSubtitle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/x-subrip")
+	w.Header().Set("Cache-Control", "private, no-store")
 	http.ServeFile(w, r, filepath.Join(dir, srtFiles[index]))
 }
 
