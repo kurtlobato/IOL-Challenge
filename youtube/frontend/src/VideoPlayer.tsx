@@ -7,13 +7,14 @@ import {
   Pause,
   Play,
   Rewind,
+  RotateCcw,
   Volume2,
   VolumeX,
   Captions,
   AudioLines,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { recordView, type SubtitleItem, type AudioTrack } from "./api";
+import { recordView, getApiBase, type SubtitleItem, type AudioTrack } from "./api";
 import { formatVideoDurationHms } from "./formatYoutubeStats";
 import {
   nextStitchedTimelineState,
@@ -41,6 +42,8 @@ type Props = {
   onBack?: () => void;
   subtitles?: SubtitleItem[];
   audioTracks?: AudioTrack[];
+  /** URL de stream original si falla todo lo demás. */
+  directStreamUrl?: string | null;
 };
 
 type SubtitleEntry = {
@@ -91,11 +94,33 @@ function parseSrt(content: string): SubtitleEntry[] {
   return entries;
 }
 
+/** Alinea la URL del .srt con la semilla API actual (host/puerto correctos en LAN). */
+function resolveSubtitleFetchUrl(url: string): string {
+  const base = getApiBase().trim().replace(/\/$/, "");
+  if (!base) return url;
+  try {
+    const u = new URL(url);
+    if (!u.pathname.startsWith("/api/")) return url;
+    const origin = new URL(base.includes("://") ? base : `http://${base}`).origin;
+    return `${origin}${u.pathname}${u.search}`;
+  } catch {
+    return url;
+  }
+}
+
+export default function VideoPlayer({
+  videoId,
+  viewerKey,
+  manifestUrl,
+  streamUrl,
+  durationSeconds,
+  viewApiOrigin,
   onViewCountUpdated,
   title,
   onBack,
   subtitles = [],
   audioTracks = [],
+  directStreamUrl,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -113,14 +138,31 @@ function parseSrt(content: string): SubtitleEntry[] {
   const [shellInFullscreen, setShellInFullscreen] = useState(false);
   const [progress, setProgress] = useState({ current: 0, duration: 0 });
   const [playing, setPlaying] = useState(false);
+  const [volumeLevel, setVolumeLevel] = useState<number>(() => {
+    const saved = localStorage.getItem("lanflix_global_volume");
+    return saved ? parseFloat(saved) : 1.0;
+  });
   const [muted, setMuted] = useState(false);
-  const [volumeLevel, setVolumeLevel] = useState(1);
   const [volumeHovered, setVolumeHovered] = useState(false);
   const [volumeScrubbing, setVolumeScrubbing] = useState(false);
   const [scrubbing, setScrubbing] = useState(false);
   const scrubbingRef = useRef(false);
   const [chromeVisible, setChromeVisible] = useState(true);
+  const hasRestoredRef = useRef(false);
+  // Use a ref for volume so we don't re-run playback effects when volume changes
+  const volumeRef = useRef<number>((() => {
+    const saved = localStorage.getItem("lanflix_global_volume");
+    return saved ? parseFloat(saved) : 1.0;
+  })());
   const chromeTimerRef = useRef<number | null>(null);
+
+  // Position will be restored only on component mount; we don't store it on every timeupdate.
+  const positionKey = `lanflix_progress_${videoId}`;
+  const savePosition = (pos: number) => {
+    try {
+      localStorage.setItem(positionKey, pos.toString());
+    } catch (_) {}
+  };
 
   const [selectedSubtitle, setSelectedSubtitle] = useState<SubtitleItem | null>(null);
   const [subtitlesData, setSubtitlesData] = useState<SubtitleEntry[]>([]);
@@ -128,6 +170,9 @@ function parseSrt(content: string): SubtitleEntry[] {
 
   const [selectedAudioTrack, setSelectedAudioTrack] = useState<number>(0);
   const [showAudioMenu, setShowAudioMenu] = useState(false);
+
+  /** Evita re-ejecutar la restauración en cada re-render con nuevo array `subtitles`. */
+  const subtitleUrlsKey = useMemo(() => subtitles.map((s) => s.url).join("\0"), [subtitles]);
 
   const showChrome = useCallback(() => {
     setChromeVisible(true);
@@ -175,27 +220,41 @@ function parseSrt(content: string): SubtitleEntry[] {
     setSelectedSubtitle(null);
     setSubtitlesData([]);
     setSelectedAudioTrack(0);
-  }, [manifestUrl, streamUrl, videoId]);
+    // Reset restoration flag so position is re-read on new video
+    hasRestoredRef.current = false;
+  }, [manifestUrl, streamUrl, videoId, directStreamUrl]);
+
+  // Restaurar subtítulo guardado cuando cambia el vídeo o cuando la lista de URLs llega después del primer render.
+  useEffect(() => {
+    if (!subtitleUrlsKey) return;
+    const savedSubUrl = localStorage.getItem(`lanflix_subtitle_${videoId}`);
+    if (!savedSubUrl) return;
+    const found = subtitles.find((s) => s.url === savedSubUrl);
+    if (found) setSelectedSubtitle(found);
+  }, [videoId, subtitleUrlsKey, subtitles]);
 
   useEffect(() => {
     if (!selectedSubtitle) {
       setSubtitlesData([]);
       return;
     }
+    localStorage.setItem(`lanflix_subtitle_${videoId}`, selectedSubtitle.url);
     let cancelled = false;
-    void fetch(selectedSubtitle.url)
-      .then((res) => res.text())
-      .then((text) => {
-        if (!cancelled) {
-          setSubtitlesData(parseSrt(text));
-        }
+    const fetchUrl = resolveSubtitleFetchUrl(selectedSubtitle.url);
+    void fetch(fetchUrl, { cache: "no-store" })
+      .then((res) => {
+        if (!res.ok) throw new Error(`subtitles HTTP ${res.status}`);
+        return res.text();
       })
-      .catch((e) => {
-        console.error("Error loading subtitles:", e);
-      });
+      .then((text) => {
+        if (!cancelled) setSubtitlesData(parseSrt(text));
+      })
+      .catch((e) => console.error("Error loading subtitles:", e));
     return () => {
       cancelled = true;
     };
+    // videoId is intentionally excluded: we only re-fetch when the subtitle itself changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSubtitle]);
 
   const currentSubtitleText = useMemo(() => {
@@ -217,11 +276,20 @@ function parseSrt(content: string): SubtitleEntry[] {
         duration: d > 0 ? d : prev.duration,
       }));
     };
-    const onPlay = () => setPlaying(true);
-    const onPause = () => setPlaying(false);
+    const onPlay = () => {
+      setPlaying(true);
+    };
+    const onPause = () => {
+      setPlaying(false);
+      // Save current position when pausing
+      savePosition(video.currentTime);
+    };
     const onVol = () => {
       setMuted(video.muted);
       setVolumeLevel(video.volume);
+      volumeRef.current = video.volume;
+      // Persist volume change immediately
+      localStorage.setItem("lanflix_global_volume", video.volume.toString());
     };
     video.addEventListener("timeupdate", sync);
     video.addEventListener("loadedmetadata", sync);
@@ -229,10 +297,13 @@ function parseSrt(content: string): SubtitleEntry[] {
     video.addEventListener("play", onPlay);
     video.addEventListener("pause", onPause);
     video.addEventListener("volumechange", onVol);
-    setMuted(video.muted);
-    setVolumeLevel(video.volume);
+    // Volumen desde ref; la posición se restaura en tryPlay tras cambiar src (evita condición de carrera con hasRestoredRef).
+    video.volume = volumeRef.current;
     sync();
+
     return () => {
+      // Save position when component unmounts
+      savePosition(video.currentTime);
       video.removeEventListener("timeupdate", sync);
       video.removeEventListener("loadedmetadata", sync);
       video.removeEventListener("durationchange", sync);
@@ -240,7 +311,7 @@ function parseSrt(content: string): SubtitleEntry[] {
       video.removeEventListener("pause", onPause);
       video.removeEventListener("volumechange", onVol);
     };
-  }, [manifestUrl, streamUrl, readDurationForUi]);
+  }, [manifestUrl, streamUrl, directStreamUrl, readDurationForUi, videoId]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -289,7 +360,9 @@ function parseSrt(content: string): SubtitleEntry[] {
         durationFromHls(),
       );
       if (dur == null || dur <= 0) return;
+      
       const watched = maxEffectiveWatchedRef.current;
+      
       if (watched + 1e-3 < dur * 0.1) return;
       viewCountedRef.current = true;
       void recordView(videoId, viewerKey, watched, viewApiOrigin ?? undefined)
@@ -306,7 +379,7 @@ function parseSrt(content: string): SubtitleEntry[] {
       video.removeEventListener("seeked", onSeeked);
       video.removeEventListener("timeupdate", onTime);
     };
-  }, [durationSeconds, manifestUrl, streamUrl, videoId, viewerKey, viewApiOrigin]);
+  }, [durationSeconds, manifestUrl, streamUrl, directStreamUrl, videoId, viewerKey, viewApiOrigin]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -315,9 +388,20 @@ function parseSrt(content: string): SubtitleEntry[] {
     hlsRef.current = null;
 
     const tryPlay = () => {
+      // Restore saved progress only the first time the video becomes ready
+      if (!hasRestoredRef.current) {
+        const savedProgress = localStorage.getItem(`lanflix_progress_${videoId}`);
+        if (savedProgress) {
+          video.currentTime = parseFloat(savedProgress);
+        }
+        hasRestoredRef.current = true;
+      }
+      // Apply volume from ref (avoids re-run of effect when volume changes)
+      video.volume = volumeRef.current;
       void video.play().catch(() => {});
     };
 
+    // Prioridad 1: Transcodificación MP4 (más eficiente y estable)
     if (streamUrl) {
       video.src = streamUrl;
       video.addEventListener("canplay", tryPlay);
@@ -329,34 +413,43 @@ function parseSrt(content: string): SubtitleEntry[] {
       };
     }
 
-    if (!manifestUrl) {
-      return;
+    // Prioridad 2: HLS (compatible y permite múltiples pistas/subtítulos)
+    if (manifestUrl) {
+      if (Hls.isSupported()) {
+        const hls = new Hls({ enableWorker: true });
+        hlsRef.current = hls;
+        hls.loadSource(manifestUrl);
+        hls.attachMedia(video);
+
+        const onManifestParsed = () => {
+          tryPlay();
+        };
+
+        hls.on(Hls.Events.MANIFEST_PARSED, onManifestParsed);
+
+        return () => {
+          hls.off(Hls.Events.MANIFEST_PARSED, onManifestParsed);
+          hls.destroy();
+          hlsRef.current = null;
+          video.pause();
+          video.removeAttribute("src");
+          video.load();
+        };
+      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = manifestUrl;
+        video.addEventListener("canplay", tryPlay);
+        return () => {
+          video.removeEventListener("canplay", tryPlay);
+          video.pause();
+          video.removeAttribute("src");
+          video.load();
+        };
+      }
     }
 
-    if (Hls.isSupported()) {
-      const hls = new Hls({ enableWorker: true });
-      hlsRef.current = hls;
-      hls.loadSource(manifestUrl!);
-      hls.attachMedia(video);
-
-      const onManifestParsed = () => {
-        tryPlay();
-      };
-
-      hls.on(Hls.Events.MANIFEST_PARSED, onManifestParsed);
-
-      return () => {
-        hls.off(Hls.Events.MANIFEST_PARSED, onManifestParsed);
-        hls.destroy();
-        hlsRef.current = null;
-        video.pause();
-        video.removeAttribute("src");
-        video.load();
-      };
-    }
-
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = manifestUrl!;
+    // Prioridad 3: Stream directo original (último recurso)
+    if (directStreamUrl) {
+      video.src = directStreamUrl;
       video.addEventListener("canplay", tryPlay);
       return () => {
         video.removeEventListener("canplay", tryPlay);
@@ -365,16 +458,7 @@ function parseSrt(content: string): SubtitleEntry[] {
         video.load();
       };
     }
-
-    video.src = manifestUrl!;
-    video.addEventListener("canplay", tryPlay);
-    return () => {
-      video.removeEventListener("canplay", tryPlay);
-      video.pause();
-      video.removeAttribute("src");
-      video.load();
-    };
-  }, [manifestUrl, streamUrl]);
+  }, [manifestUrl, streamUrl, directStreamUrl, videoId]);
 
   const seekToClientX = useCallback(
     (clientX: number) => {
@@ -677,6 +761,30 @@ function parseSrt(content: string): SubtitleEntry[] {
               >
                 <FastForward size={iconSize} strokeWidth={iconStroke} aria-hidden />
               </button>
+              <button
+                type="button"
+                className="detail-player-icon-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const v = videoRef.current;
+                  if (!v) return;
+                  try {
+                    localStorage.removeItem(positionKey);
+                  } catch (_) {}
+                  v.currentTime = 0;
+                  const d = readDurationForUi(v);
+                  setProgress((prev) => ({
+                    current: 0,
+                    duration: d > 0 ? d : prev.duration,
+                  }));
+                  setPlaying(true);
+                  void v.play().catch(() => {});
+                  showChrome();
+                }}
+                aria-label="Reiniciar desde el inicio"
+              >
+                <RotateCcw size={iconSize} strokeWidth={iconStroke} aria-hidden />
+              </button>
               <div
                 className="detail-player-volume-wrap"
                 onMouseEnter={() => setVolumeHovered(true)}
@@ -812,20 +920,33 @@ function parseSrt(content: string): SubtitleEntry[] {
                           }
                           onClick={(e) => {
                             e.stopPropagation();
-                            setSelectedAudioTrack(t.index);
-                            if (hlsRef.current) {
-                              hlsRef.current.audioTrack = t.index;
-                            } else if (videoRef.current) {
-                              const v = videoRef.current;
-                              const time = v.currentTime;
-                              const playing = !v.paused;
-                              const url = new URL(v.src);
-                              url.searchParams.set("audio_track", t.index.toString());
-                              v.src = url.toString();
-                              v.currentTime = time;
-                              if (playing) void v.play();
-                            }
+                            const trackIndex = t.index;
+                            setSelectedAudioTrack(trackIndex);
                             setShowAudioMenu(false);
+
+                            const video = videoRef.current;
+                            if (!video) return;
+
+                            const currentTime = video.currentTime;
+                            const isPlaying = !video.paused;
+
+                            // Siempre usamos el stream directo para cambiar de pista de audio
+                            // ya que el backend lo maneja mediante remapeo de ffmpeg.
+                            const baseUri = directStreamUrl || streamUrl;
+                            if (!baseUri) return;
+
+                            const url = new URL(baseUri, window.location.origin);
+                            url.searchParams.set("audio_track", trackIndex.toString());
+                            
+                            // Si estábamos en HLS, destruimos la instancia para volver al stream directo
+                            if (hlsRef.current) {
+                              hlsRef.current.destroy();
+                              hlsRef.current = null;
+                            }
+
+                            video.src = url.toString();
+                            video.currentTime = currentTime;
+                            if (isPlaying) void video.play();
                           }}
                         >
                           {t.label}
@@ -867,6 +988,9 @@ function parseSrt(content: string): SubtitleEntry[] {
                         }
                         onClick={(e) => {
                           e.stopPropagation();
+                          try {
+                            localStorage.removeItem(`lanflix_subtitle_${videoId}`);
+                          } catch (_) {}
                           setSelectedSubtitle(null);
                           setShowSubtitleMenu(false);
                         }}

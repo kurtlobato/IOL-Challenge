@@ -17,7 +17,7 @@ import {
   type SeriesItem,
   type VideoItem,
 } from "./api";
-import { VideoPlayer } from "./VideoPlayer";
+import VideoPlayer from "./VideoPlayer";
 import { formatRelativeUploadDate } from "./formatUploadDate";
 import { formatVideoDurationHms, formatViewsLine } from "./formatYoutubeStats";
 import {

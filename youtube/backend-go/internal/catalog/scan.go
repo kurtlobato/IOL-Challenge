@@ -80,15 +80,16 @@ type ffprobeOut struct {
 		FormatName string `json:"format_name"`
 	} `json:"format"`
 	Streams []struct {
-		CodecType string `json:"codec_type"`
-		CodecName string `json:"codec_name"`
-		PixFmt    string `json:"pix_fmt"`
+		CodecType string            `json:"codec_type"`
+		CodecName string            `json:"codec_name"`
+		PixFmt    string            `json:"pix_fmt"`
+		Tags      map[string]string `json:"tags"`
 	} `json:"streams"`
 }
 
 func probeAndUpsertMedia(ctx context.Context, st *store.Store, videoID, absPath string) error {
-	// Skip if already known.
-	if mi, err := st.GetMediaInfo(ctx, videoID); err == nil && mi != nil {
+	// Skip if already known and has audio tracks info.
+	if mi, err := st.GetMediaInfo(ctx, videoID); err == nil && mi != nil && mi.AudioTracks != "" {
 		return nil
 	}
 	// Keep ffprobe from hanging a scan indefinitely.
@@ -127,10 +128,20 @@ func probeAndUpsertMedia(ctx context.Context, st *store.Store, videoID, absPath 
 				pix = s.PixFmt
 			}
 		case "audio":
+			lang := s.Tags["language"]
+			title := s.Tags["title"]
+			
 			label := fmt.Sprintf("Audio %d", len(audioTracks)+1)
+			if title != "" {
+				label = title
+			} else if lang != "" {
+				label = strings.ToUpper(lang)
+			}
+
 			if s.CodecName != "" {
 				label += " (" + s.CodecName + ")"
 			}
+			
 			audioTracks = append(audioTracks, audioTrack{
 				Index: len(audioTracks),
 				Label: label,
