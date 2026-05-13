@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +25,8 @@ var videoExtensions = map[string]struct{}{
 // Scan walks library roots and upserts videos in the store.
 func Scan(ctx context.Context, roots []string, st *store.Store) error {
 	now := time.Now().UTC()
+	knownSeries := make(map[string]bool)
+
 	for ri, root := range roots {
 		root = filepath.Clean(root)
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -49,6 +53,9 @@ func Scan(ctx context.Context, roots []string, st *store.Store) error {
 				return err
 			}
 			rel = filepath.ToSlash(rel)
+			
+			seriesID, season, episode := processSeries(ctx, st, root, rel, knownSeries)
+
 			id := stableID(root, rel)
 			title := strings.TrimSuffix(filepath.Base(path), ext)
 			ct := contentTypeForExt(ext)
@@ -61,6 +68,9 @@ func Scan(ctx context.Context, roots []string, st *store.Store) error {
 				Mtime:       info.ModTime().UTC(),
 				ContentType: ct,
 				IndexedAt:   now,
+				SeriesID:    seriesID,
+				Season:      season,
+				Episode:     episode,
 			}
 			if err := st.UpsertVideo(ctx, v); err != nil {
 				return err
@@ -80,6 +90,103 @@ func Scan(ctx context.Context, roots []string, st *store.Store) error {
 		return fmt.Errorf("export metadata: %w", err)
 	}
 	return nil
+}
+
+func processSeries(ctx context.Context, st *store.Store, root string, rel string, known map[string]bool) (*string, *int, *int) {
+	parts := strings.Split(rel, "/")
+	if len(parts) <= 1 {
+		return nil, nil, nil
+	}
+
+	seriesFolder := parts[0]
+	seriesID := stableID(root, seriesFolder)
+
+	if !known[seriesID] {
+		known[seriesID] = true
+		existing, _ := st.GetSeries(ctx, seriesID)
+		if existing == nil {
+			s := &store.Series{
+				ID:        seriesID,
+				Title:     seriesFolder,
+				CreatedAt: time.Now().UTC(),
+			}
+
+			metaPath := filepath.Join(root, seriesFolder, "metadata.json")
+			if b, err := os.ReadFile(metaPath); err == nil {
+				var meta struct {
+					Title       string `json:"title"`
+					Description string `json:"description"`
+					Genre       string `json:"genre"`
+					Year        *int   `json:"year"`
+				}
+				if json.Unmarshal(b, &meta) == nil {
+					if meta.Title != "" {
+						s.Title = meta.Title
+					}
+					s.Description = meta.Description
+					s.Genre = meta.Genre
+					s.Year = meta.Year
+				}
+			}
+
+			entries, _ := os.ReadDir(filepath.Join(root, seriesFolder))
+			for _, e := range entries {
+				if !e.IsDir() {
+					ext := strings.ToLower(filepath.Ext(e.Name()))
+					if ext == ".jpg" || ext == ".png" || ext == ".jpeg" || ext == ".webp" {
+						s.ThumbRel = seriesFolder + "/" + e.Name()
+						break
+					}
+				}
+			}
+			_ = st.CreateSeries(ctx, s)
+		}
+	}
+
+	season, episode := parseSeasonEpisode(rel)
+
+	return &seriesID, season, episode
+}
+
+func parseSeasonEpisode(rel string) (*int, *int) {
+	base := filepath.Base(rel)
+	reSE := regexp.MustCompile(`(?i)[st](\d+)[ec](\d+)`)
+	m := reSE.FindStringSubmatch(base)
+	if len(m) == 3 {
+		s, _ := strconv.Atoi(m[1])
+		e, _ := strconv.Atoi(m[2])
+		return &s, &e
+	}
+
+	parts := strings.Split(rel, "/")
+	var season *int
+	reSeason := regexp.MustCompile(`(?i)(?:season|temporada)\s*(\d+)`)
+	for _, p := range parts[:len(parts)-1] {
+		m := reSeason.FindStringSubmatch(p)
+		if len(m) == 2 {
+			s, _ := strconv.Atoi(m[1])
+			season = &s
+			break
+		}
+	}
+
+	if season != nil {
+		reEp := regexp.MustCompile(`(?i)(?:episode|capitulo|capítulo|chapter|ep?|c)\s*(?:-|_)?\s*(\d+)`)
+		m := reEp.FindStringSubmatch(base)
+		if len(m) == 2 {
+			e, _ := strconv.Atoi(m[1])
+			return season, &e
+		}
+
+		reNum := regexp.MustCompile(`\b(\d+)\b`)
+		m = reNum.FindStringSubmatch(base)
+		if len(m) == 2 {
+			e, _ := strconv.Atoi(m[1])
+			return season, &e
+		}
+	}
+
+	return nil, nil
 }
 
 type ffprobeOut struct {
