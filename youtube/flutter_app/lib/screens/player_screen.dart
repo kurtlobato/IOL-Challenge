@@ -31,11 +31,51 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   int _selectedAudioTrack = 0;
   
   SubtitleItem? _currentSubtitle;
-  final FocusNode _playPauseFocusNode = FocusNode();
-  final FocusNode _audioFocusNode = FocusNode();
-  final FocusNode _subtitleFocusNode = FocusNode();
-  final FocusNode _backFocusNode = FocusNode();
-  final FocusNode _restartFocusNode = FocusNode();
+
+  KeyEventResult _onTopControlKey(FocusNode node, KeyEvent event) {
+    if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.arrowDown) {
+      _playPauseFocusNode.requestFocus();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  KeyEventResult _onCenterControlKey(FocusNode node, KeyEvent event) {
+    if (event is KeyDownEvent) {
+      if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+        _backFocusNode.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+        _sliderFocusNode.requestFocus();
+        return KeyEventResult.handled;
+      }
+    }
+    return KeyEventResult.ignored;
+  }
+
+  late final FocusNode _playPauseFocusNode = FocusNode(onKeyEvent: _onCenterControlKey);
+  late final FocusNode _replayFocusNode = FocusNode(onKeyEvent: _onCenterControlKey);
+  late final FocusNode _forwardFocusNode = FocusNode(onKeyEvent: _onCenterControlKey);
+
+  late final FocusNode _audioFocusNode = FocusNode(onKeyEvent: _onTopControlKey);
+  late final FocusNode _subtitleFocusNode = FocusNode(onKeyEvent: _onTopControlKey);
+  late final FocusNode _backFocusNode = FocusNode(onKeyEvent: _onTopControlKey);
+  late final FocusNode _restartFocusNode = FocusNode(onKeyEvent: _onTopControlKey);
+
+  late final FocusNode _sliderFocusNode = FocusNode(onKeyEvent: (node, event) {
+    if (event is KeyDownEvent) {
+      if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+        _playPauseFocusNode.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+        return KeyEventResult.handled;
+      }
+    }
+    return KeyEventResult.ignored;
+  });
+
   final FocusScopeNode _focusScopeNode = FocusScopeNode();
 
   SharedPreferences? _prefs;
@@ -131,7 +171,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     if (mounted) {
       setState(() {});
       // Asegurar que el foco no se pierda al reconstruir
-      _playPauseFocusNode.requestFocus();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _playPauseFocusNode.requestFocus();
+      });
     }
   }
 
@@ -176,9 +218,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         _showControls = true;
       });
     }
-    // Solo forzar el foco inicial si el ámbito del reproductor no lo tiene
-    // Esto evita que el foco "salte" si el usuario ya está navegando por otros botones
-    if (!_focusScopeNode.hasFocus) {
+    // Solo forzar el foco inicial si el ámbito del reproductor no tiene un hijo enfocado.
+    // Esto evita que el foco "salte" si el usuario ya está navegando por otros botones,
+    // pero corrige el caso donde el scope tiene foco pero el botón interno fue destruido.
+    if (_focusScopeNode.focusedChild == null) {
       _playPauseFocusNode.requestFocus();
     }
     _startHideControlsTimer();
@@ -234,10 +277,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _viewTimer?.cancel();
     _hideControlsTimer?.cancel();
     _playPauseFocusNode.dispose();
+    _replayFocusNode.dispose();
+    _forwardFocusNode.dispose();
     _audioFocusNode.dispose();
     _subtitleFocusNode.dispose();
     _backFocusNode.dispose();
     _restartFocusNode.dispose();
+    _sliderFocusNode.dispose();
     _focusScopeNode.dispose();
     WakelockPlus.disable();
     _controller?.removeListener(_onVideoUpdate);
@@ -381,16 +427,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           child: Focus(
             onKeyEvent: (node, event) {
               if (event is KeyDownEvent) {
-                // Cualquier tecla del mando despierta los controles
-                _showControlsTemporarily();
-                
-                if (event.logicalKey == LogicalKeyboardKey.escape ||
-                    event.logicalKey == LogicalKeyboardKey.backspace) {
+                final isBack = event.logicalKey == LogicalKeyboardKey.escape ||
+                    event.logicalKey == LogicalKeyboardKey.backspace ||
+                    event.logicalKey == LogicalKeyboardKey.goBack;
+
+                if (isBack) {
                   if (_showControls) {
                     setState(() => _showControls = false);
                     return KeyEventResult.handled;
+                  } else {
+                    Navigator.of(context).pop();
+                    return KeyEventResult.handled;
                   }
                 }
+
+                // Cualquier otra tecla del mando despierta los controles
+                _showControlsTemporarily();
               }
               return KeyEventResult.ignored;
             },
@@ -534,6 +586,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
                                     _ControlButton(
+                                      focusNode: _replayFocusNode,
                                       icon: Icons.replay_10,
                                       onTap: () => _seekRelative(-10),
                                     ),
@@ -547,6 +600,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                     ),
                                     const SizedBox(width: 70),
                                     _ControlButton(
+                                      focusNode: _forwardFocusNode,
                                       icon: Icons.forward_10,
                                       onTap: () => _seekRelative(10),
                                     ),
@@ -574,6 +628,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                             thumbColor: theme.colorScheme.primary,
                                           ),
                                           child: Slider(
+                                            focusNode: _sliderFocusNode,
                                             value: c.value.position.inSeconds.toDouble(),
                                             max: c.value.duration.inSeconds.toDouble().clamp(1, double.infinity),
                                             onChanged: (val) {
