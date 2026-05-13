@@ -732,11 +732,17 @@ func (s *Server) handleGetThumbnail(w http.ResponseWriter, r *http.Request) {
 
 	tctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	
+	sec := "00:00:03"
+	if v.DurationSeconds != nil && *v.DurationSeconds > 0 {
+		sec = fmt.Sprintf("%.3f", *v.DurationSeconds/2.0)
+	}
+
 	cmd := exec.CommandContext(tctx, "ffmpeg",
 		"-hide_banner",
 		"-loglevel", "error",
 		"-y",
-		"-ss", "00:00:03",
+		"-ss", sec,
 		"-i", inPath,
 		"-frames:v", "1",
 		"-vf", "scale=360:-1",

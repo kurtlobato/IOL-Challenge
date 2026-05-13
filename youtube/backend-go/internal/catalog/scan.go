@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -72,12 +73,19 @@ func Scan(ctx context.Context, roots []string, st *store.Store) error {
 			return fmt.Errorf("walk %q: %w", root, err)
 		}
 	}
+	if err := st.DeleteMissingVideos(ctx, now); err != nil {
+		return fmt.Errorf("delete missing: %w", err)
+	}
+	if err := exportMetadata(ctx, roots, st); err != nil {
+		return fmt.Errorf("export metadata: %w", err)
+	}
 	return nil
 }
 
 type ffprobeOut struct {
 	Format struct {
-		FormatName string `json:"format_name"`
+		FormatName string            `json:"format_name"`
+		Tags       map[string]string `json:"tags"`
 	} `json:"format"`
 	Streams []struct {
 		CodecType string            `json:"codec_type"`
@@ -112,6 +120,17 @@ func probeAndUpsertMedia(ctx context.Context, st *store.Store, videoID, absPath 
 	var parsed ffprobeOut
 	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
 		return nil
+	}
+
+	var title string
+	for k, v := range parsed.Format.Tags {
+		if strings.ToLower(k) == "title" {
+			title = v
+			break
+		}
+	}
+	if title != "" {
+		_ = st.UpdateVideoTitle(ctx, videoID, title)
 	}
 	type audioTrack struct {
 		Index int    `json:"index"`
@@ -185,4 +204,49 @@ func contentTypeForExt(ext string) string {
 	default:
 		return "application/octet-stream"
 	}
+}
+
+type RootMetadata struct {
+	Videos []store.Video  `json:"videos"`
+	Series []store.Series `json:"series"`
+}
+
+func exportMetadata(ctx context.Context, roots []string, st *store.Store) error {
+	videos, err := st.ListVideos(ctx)
+	if err != nil {
+		return err
+	}
+	series, err := st.ListSeries(ctx)
+	if err != nil {
+		return err
+	}
+	for ri, root := range roots {
+		meta := RootMetadata{}
+		seriesMap := make(map[string]store.Series)
+		for _, v := range videos {
+			if v.RootIndex == ri {
+				meta.Videos = append(meta.Videos, v)
+				if v.SeriesID != nil {
+					for _, s := range series {
+						if s.ID == *v.SeriesID {
+							seriesMap[s.ID] = s
+							break
+						}
+					}
+				}
+			}
+		}
+		for _, s := range seriesMap {
+			meta.Series = append(meta.Series, s)
+		}
+		b, err := json.MarshalIndent(meta, "", "  ")
+		if err != nil {
+			return err
+		}
+		metaPath := filepath.Join(root, "metadata.json")
+		if err := os.WriteFile(metaPath, b, 0644); err != nil {
+			return err
+		}
+	}
+	return nil
 }

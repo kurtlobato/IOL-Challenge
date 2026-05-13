@@ -218,7 +218,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', '', NULL, NULL, NULL, NULL)
 ON CONFLICT(id) DO UPDATE SET
   root_index = excluded.root_index,
   rel_path = excluded.rel_path,
-  title = excluded.title,
+  title = videos.title,
   size_bytes = excluded.size_bytes,
   mtime_ns = excluded.mtime_ns,
   content_type = excluded.content_type,
@@ -527,6 +527,32 @@ func (s *Store) DeleteVideo(ctx context.Context, id string) error {
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM video_views WHERE video_id = ?`, id)
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM video_media WHERE video_id = ?`, id)
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM video_transcodes WHERE video_id = ?`, id)
+	return nil
+}
+
+// DeleteMissingVideos removes catalog entries that were not updated since the provided timestamp.
+func (s *Store) DeleteMissingVideos(ctx context.Context, before time.Time) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM videos WHERE indexed_at < ?`, before.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := s.DeleteVideo(ctx, id); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
