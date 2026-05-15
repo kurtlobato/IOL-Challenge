@@ -29,12 +29,49 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   bool _showControls = true;
   double _volume = 1.0;
   int _selectedAudioTrack = 0;
-  
+
   SubtitleItem? _currentSubtitle;
 
   KeyEventResult _onTopControlKey(FocusNode node, KeyEvent event) {
-    if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.arrowDown) {
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.arrowDown) {
       _playPauseFocusNode.requestFocus();
+      return KeyEventResult.handled;
+    }
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+      if (_restartFocusNode.hasFocus) {
+        _backFocusNode.requestFocus();
+      } else if (_audioFocusNode.hasFocus) {
+        _restartFocusNode.requestFocus();
+      } else if (_subtitleFocusNode.hasFocus) {
+        if (widget.video.audioTracks.isNotEmpty) {
+          _audioFocusNode.requestFocus();
+        } else {
+          _restartFocusNode.requestFocus();
+        }
+      }
+      return KeyEventResult.handled;
+    }
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.arrowRight) {
+      if (_restartFocusNode.hasFocus) {
+        if (widget.video.audioTracks.isNotEmpty) {
+          _audioFocusNode.requestFocus();
+        } else if (widget.video.subtitles.isNotEmpty) {
+          _subtitleFocusNode.requestFocus();
+        }
+      } else if (_audioFocusNode.hasFocus) {
+        if (widget.video.subtitles.isNotEmpty) {
+          _subtitleFocusNode.requestFocus();
+        }
+      } else if (_backFocusNode.hasFocus) {
+        _restartFocusNode.requestFocus();
+      }
+      return KeyEventResult.handled;
+    }
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.arrowUp) {
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
@@ -43,38 +80,74 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   KeyEventResult _onCenterControlKey(FocusNode node, KeyEvent event) {
     if (event is KeyDownEvent) {
       if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
-        _backFocusNode.requestFocus();
+        if (_playPauseFocusNode.hasFocus) {
+          _restartFocusNode.requestFocus();
+        } else if (_replayFocusNode.hasFocus) {
+          _backFocusNode.requestFocus();
+        } else if (_forwardFocusNode.hasFocus) {
+          _subtitleFocusNode.requestFocus();
+        }
         return KeyEventResult.handled;
       }
       if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
         _sliderFocusNode.requestFocus();
         return KeyEventResult.handled;
       }
+      if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+        if (_forwardFocusNode.hasFocus) {
+          _playPauseFocusNode.requestFocus();
+        } else if (_playPauseFocusNode.hasFocus) {
+          _replayFocusNode.requestFocus();
+        }
+        return KeyEventResult.handled;
+      }
+      if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+        if (_replayFocusNode.hasFocus) {
+          _playPauseFocusNode.requestFocus();
+        } else if (_playPauseFocusNode.hasFocus) {
+          _forwardFocusNode.requestFocus();
+        }
+        return KeyEventResult.handled;
+      }
     }
     return KeyEventResult.ignored;
   }
 
-  late final FocusNode _playPauseFocusNode = FocusNode(onKeyEvent: _onCenterControlKey);
-  late final FocusNode _replayFocusNode = FocusNode(onKeyEvent: _onCenterControlKey);
-  late final FocusNode _forwardFocusNode = FocusNode(onKeyEvent: _onCenterControlKey);
+  late final FocusNode _playPauseFocusNode = FocusNode(
+    onKeyEvent: _onCenterControlKey,
+  );
+  late final FocusNode _replayFocusNode = FocusNode(
+    onKeyEvent: _onCenterControlKey,
+  );
+  late final FocusNode _forwardFocusNode = FocusNode(
+    onKeyEvent: _onCenterControlKey,
+  );
 
-  late final FocusNode _audioFocusNode = FocusNode(onKeyEvent: _onTopControlKey);
-  late final FocusNode _subtitleFocusNode = FocusNode(onKeyEvent: _onTopControlKey);
+  late final FocusNode _audioFocusNode = FocusNode(
+    onKeyEvent: _onTopControlKey,
+  );
+  late final FocusNode _subtitleFocusNode = FocusNode(
+    onKeyEvent: _onTopControlKey,
+  );
   late final FocusNode _backFocusNode = FocusNode(onKeyEvent: _onTopControlKey);
-  late final FocusNode _restartFocusNode = FocusNode(onKeyEvent: _onTopControlKey);
+  late final FocusNode _restartFocusNode = FocusNode(
+    onKeyEvent: _onTopControlKey,
+  );
 
-  late final FocusNode _sliderFocusNode = FocusNode(onKeyEvent: (node, event) {
-    if (event is KeyDownEvent) {
-      if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
-        _playPauseFocusNode.requestFocus();
-        return KeyEventResult.handled;
+  late final FocusNode _sliderFocusNode = FocusNode(
+    onKeyEvent: (node, event) {
+      if (event is KeyDownEvent) {
+        if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+          _playPauseFocusNode.requestFocus();
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+          return KeyEventResult.handled;
+        }
       }
-      if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-        return KeyEventResult.handled;
-      }
-    }
-    return KeyEventResult.ignored;
-  });
+      return KeyEventResult.ignored;
+    },
+  );
 
   final FocusScopeNode _focusScopeNode = FocusScopeNode();
 
@@ -118,17 +191,20 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     await _loadPrefs();
     if (!mounted) return;
     await _initController();
-    
+
     final viewerKey = await ref.read(viewerKeyProvider.future);
     if (!mounted) return;
     _viewTimer = Timer.periodic(const Duration(seconds: 20), (_) {
       unawaited(_reportView(viewerKey));
     });
   }
+
   Future<void> _initController() async {
     // Si se selecciona una pista de audio específica, usamos el stream directo
     // ya que el backend puede remapearlo al vuelo usando el parámetro audio_track.
-    var uri = _selectedAudioTrack > 0 ? widget.video.streamUrl : widget.video.playbackUri;
+    var uri = _selectedAudioTrack > 0
+        ? widget.video.streamUrl
+        : widget.video.playbackUri;
     if (uri == null || uri.isEmpty) return;
 
     if (_selectedAudioTrack > 0) {
@@ -148,7 +224,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       Uri.parse(uri),
       closedCaptionFile: captionFile,
     );
-    
+
     _controller = c;
     try {
       await c.initialize();
@@ -165,9 +241,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
     if (oldController != null) {
       oldController.removeListener(_onVideoUpdate);
-      Future.delayed(const Duration(milliseconds: 500), () => oldController.dispose());
+      Future.delayed(
+        const Duration(milliseconds: 500),
+        () => oldController.dispose(),
+      );
     }
-    
+
     if (mounted) {
       setState(() {});
       // Asegurar que el foco no se pierda al reconstruir
@@ -204,7 +283,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void _startHideControlsTimer() {
     _hideControlsTimer?.cancel();
     _hideControlsTimer = Timer(const Duration(seconds: 5), () {
-      if (mounted && _controller != null && _controller!.value.isPlaying && _showControls) {
+      if (mounted &&
+          _controller != null &&
+          _controller!.value.isPlaying &&
+          _showControls) {
         setState(() {
           _showControls = false;
         });
@@ -234,7 +316,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       if (c.value.isPlaying) {
         c.pause();
         // Persist position when pausing
-        _prefs?.setInt('lanflix_progress_${widget.video.id}', c.value.position.inSeconds);
+        _prefs?.setInt(
+          'lanflix_progress_${widget.video.id}',
+          c.value.position.inSeconds,
+        );
       } else {
         c.play();
       }
@@ -272,7 +357,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void dispose() {
     // Save position before disposing
     if (_controller != null) {
-      _prefs?.setInt('lanflix_progress_${widget.video.id}', _controller!.value.position.inSeconds);
+      _prefs?.setInt(
+        'lanflix_progress_${widget.video.id}',
+        _controller!.value.position.inSeconds,
+      );
     }
     _viewTimer?.cancel();
     _hideControlsTimer?.cancel();
@@ -306,7 +394,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF1A1A1A),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Pista de Audio', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        title: const Text(
+          'Pista de Audio',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        ),
         content: SizedBox(
           width: 350,
           child: SingleChildScrollView(
@@ -326,18 +417,23 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                   },
                 ),
                 const Divider(color: Colors.white10),
-                ...widget.video.audioTracks.map((t) => _SubtitleTile(
-                  label: t.label,
-                  isSelected: _selectedAudioTrack == t.index,
-                  onTap: () {
-                    Navigator.pop(context);
-                    if (_selectedAudioTrack != t.index) {
-                      setState(() => _selectedAudioTrack = t.index);
-                      _prefs?.setInt('lanflix_audio_${widget.video.id}', t.index);
-                      _initController();
-                    }
-                  },
-                )),
+                ...widget.video.audioTracks.map(
+                  (t) => _SubtitleTile(
+                    label: t.label,
+                    isSelected: _selectedAudioTrack == t.index,
+                    onTap: () {
+                      Navigator.pop(context);
+                      if (_selectedAudioTrack != t.index) {
+                        setState(() => _selectedAudioTrack = t.index);
+                        _prefs?.setInt(
+                          'lanflix_audio_${widget.video.id}',
+                          t.index,
+                        );
+                        _initController();
+                      }
+                    },
+                  ),
+                ),
               ],
             ),
           ),
@@ -374,7 +470,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF1A1A1A),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Subtítulos', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        title: const Text(
+          'Subtítulos',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        ),
         content: SizedBox(
           width: 350,
           child: SingleChildScrollView(
@@ -390,14 +489,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                   },
                 ),
                 const Divider(color: Colors.white10),
-                ...widget.video.subtitles.map((s) => _SubtitleTile(
-                  label: s.label,
-                  isSelected: _currentSubtitle == s,
-                  onTap: () {
-                    Navigator.pop(context);
-                    _selectSubtitle(s);
-                  },
-                )),
+                ...widget.video.subtitles.map(
+                  (s) => _SubtitleTile(
+                    label: s.label,
+                    isSelected: _currentSubtitle == s,
+                    onTap: () {
+                      Navigator.pop(context);
+                      _selectSubtitle(s);
+                    },
+                  ),
+                ),
               ],
             ),
           ),
@@ -427,7 +528,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           child: Focus(
             onKeyEvent: (node, event) {
               if (event is KeyDownEvent) {
-                final isBack = event.logicalKey == LogicalKeyboardKey.escape ||
+                final isBack =
+                    event.logicalKey == LogicalKeyboardKey.escape ||
                     event.logicalKey == LogicalKeyboardKey.backspace ||
                     event.logicalKey == LogicalKeyboardKey.goBack;
 
@@ -455,15 +557,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                   if (isInitialized)
                     Center(
                       child: AspectRatio(
-                        aspectRatio: c.value.aspectRatio == 0 ? 16 / 9 : c.value.aspectRatio,
+                        aspectRatio: c.value.aspectRatio == 0
+                            ? 16 / 9
+                            : c.value.aspectRatio,
                         child: VideoPlayer(c),
                       ),
                     )
                   else
-                    const Center(child: CircularProgressIndicator(color: Colors.white24)),
+                    const Center(
+                      child: CircularProgressIndicator(color: Colors.white24),
+                    ),
 
                   // Subtitles Layer
-                  if (isInitialized && _currentSubtitle != null && c.value.caption.text.isNotEmpty)
+                  if (isInitialized &&
+                      _currentSubtitle != null &&
+                      c.value.caption.text.isNotEmpty)
                     Positioned(
                       bottom: _showControls ? 160 : 60,
                       left: 100,
@@ -516,24 +624,31 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                 right: 0,
                                 child: SafeArea(
                                   child: Padding(
-                                    padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 32),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 40,
+                                      vertical: 32,
+                                    ),
                                     child: Row(
                                       children: [
                                         _TopButton(
                                           focusNode: _backFocusNode,
                                           icon: Icons.arrow_back,
-                                          onTap: () => Navigator.of(context).pop(),
+                                          onTap: () =>
+                                              Navigator.of(context).pop(),
                                         ),
                                         const SizedBox(width: 12),
                                         _TopButton(
                                           focusNode: _restartFocusNode,
                                           icon: Icons.restart_alt,
-                                          onTap: () => unawaited(_restartFromBeginning()),
+                                          onTap: () => unawaited(
+                                            _restartFromBeginning(),
+                                          ),
                                         ),
                                         const SizedBox(width: 24),
                                         Expanded(
                                           child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
                                             children: [
                                               Text(
                                                 widget.video.title,
@@ -549,7 +664,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                                 Text(
                                                   'Fuente: ${widget.video.nodeName!}',
                                                   style: TextStyle(
-                                                    color: Colors.white.withOpacity(0.5),
+                                                    color: Colors.white
+                                                        .withOpacity(0.5),
                                                     fontSize: 16,
                                                   ),
                                                 ),
@@ -568,8 +684,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                         if (widget.video.subtitles.isNotEmpty)
                                           _TopButton(
                                             focusNode: _subtitleFocusNode,
-                                            icon: _currentSubtitle != null 
-                                                ? Icons.closed_caption 
+                                            icon: _currentSubtitle != null
+                                                ? Icons.closed_caption
                                                 : Icons.closed_caption_disabled,
                                             active: _currentSubtitle != null,
                                             onTap: _showSubtitleMenu,
@@ -593,7 +709,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                     const SizedBox(width: 70),
                                     _ControlButton(
                                       focusNode: _playPauseFocusNode,
-                                      icon: c.value.isPlaying ? Icons.pause : Icons.play_arrow,
+                                      icon: c.value.isPlaying
+                                          ? Icons.pause
+                                          : Icons.play_arrow,
                                       size: 96,
                                       isPrimary: true,
                                       onTap: _togglePlayPause,
@@ -615,38 +733,78 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                 right: 0,
                                 child: SafeArea(
                                   child: Padding(
-                                    padding: const EdgeInsets.fromLTRB(64, 0, 64, 64),
+                                    padding: const EdgeInsets.fromLTRB(
+                                      64,
+                                      0,
+                                      64,
+                                      64,
+                                    ),
                                     child: Column(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
                                         SliderTheme(
-                                          data: SliderTheme.of(context).copyWith(
-                                            trackHeight: 8,
-                                            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 12),
-                                            activeTrackColor: theme.colorScheme.primary,
-                                            inactiveTrackColor: Colors.white24,
-                                            thumbColor: theme.colorScheme.primary,
-                                          ),
+                                          data: SliderTheme.of(context)
+                                              .copyWith(
+                                                trackHeight: 8,
+                                                thumbShape:
+                                                    const RoundSliderThumbShape(
+                                                      enabledThumbRadius: 12,
+                                                    ),
+                                                activeTrackColor:
+                                                    theme.colorScheme.primary,
+                                                inactiveTrackColor:
+                                                    Colors.white24,
+                                                thumbColor:
+                                                    theme.colorScheme.primary,
+                                              ),
                                           child: Slider(
                                             focusNode: _sliderFocusNode,
-                                            value: c.value.position.inSeconds.toDouble(),
-                                            max: c.value.duration.inSeconds.toDouble().clamp(1, double.infinity),
+                                            value: c.value.position.inSeconds
+                                                .toDouble(),
+                                            max: c.value.duration.inSeconds
+                                                .toDouble()
+                                                .clamp(1, double.infinity),
                                             onChanged: (val) {
-                                              c.seekTo(Duration(seconds: val.toInt()));
+                                              c.seekTo(
+                                                Duration(seconds: val.toInt()),
+                                              );
                                               _showControlsTemporarily();
                                             },
                                           ),
                                         ),
                                         const SizedBox(height: 12),
                                         Padding(
-                                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 16,
+                                          ),
                                           child: Row(
-                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.spaceBetween,
                                             children: [
-                                              Text(_formatDuration(c.value.position), 
-                                                style: const TextStyle(color: Colors.white, fontSize: 20, fontFeatures: [FontFeature.tabularFigures()])),
-                                              Text(_formatDuration(c.value.duration), 
-                                                style: const TextStyle(color: Colors.white, fontSize: 20, fontFeatures: [FontFeature.tabularFigures()])),
+                                              Text(
+                                                _formatDuration(
+                                                  c.value.position,
+                                                ),
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 20,
+                                                  fontFeatures: [
+                                                    FontFeature.tabularFigures(),
+                                                  ],
+                                                ),
+                                              ),
+                                              Text(
+                                                _formatDuration(
+                                                  c.value.duration,
+                                                ),
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 20,
+                                                  fontFeatures: [
+                                                    FontFeature.tabularFigures(),
+                                                  ],
+                                                ),
+                                              ),
                                             ],
                                           ),
                                         ),
@@ -684,9 +842,18 @@ class _SubtitleTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListTile(
-      autofocus: isSelected, // Ayuda al mando a posicionarse en la opción actual
-      title: Text(label, style: const TextStyle(color: Colors.white, fontSize: 20)),
-      trailing: isSelected ? Icon(Icons.check_circle, color: Theme.of(context).colorScheme.primary) : null,
+      autofocus:
+          isSelected, // Ayuda al mando a posicionarse en la opción actual
+      title: Text(
+        label,
+        style: const TextStyle(color: Colors.white, fontSize: 20),
+      ),
+      trailing: isSelected
+          ? Icon(
+              Icons.check_circle,
+              color: Theme.of(context).colorScheme.primary,
+            )
+          : null,
       onTap: onTap,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       hoverColor: Colors.white.withOpacity(0.1),
@@ -721,7 +888,13 @@ class _TopButton extends StatelessWidget {
             shape: BoxShape.circle,
             color: Colors.white.withOpacity(0.05),
           ),
-          child: Icon(icon, color: active ? Theme.of(context).colorScheme.primary : Colors.white, size: 36),
+          child: Icon(
+            icon,
+            color: active
+                ? Theme.of(context).colorScheme.primary
+                : Colors.white,
+            size: 36,
+          ),
         ),
       ),
     );
@@ -755,8 +928,12 @@ class _ControlButton extends StatelessWidget {
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: isPrimary ? Colors.white.withOpacity(0.15) : Colors.white.withOpacity(0.05),
-            border: isPrimary ? Border.all(color: Colors.white24, width: 2) : null,
+            color: isPrimary
+                ? Colors.white.withOpacity(0.15)
+                : Colors.white.withOpacity(0.05),
+            border: isPrimary
+                ? Border.all(color: Colors.white24, width: 2)
+                : null,
           ),
           child: Icon(icon, color: Colors.white, size: size),
         ),
@@ -775,7 +952,9 @@ class _SrtCaptionFile extends ClosedCaptionFile {
     final List<Caption> captions = [];
     final normalized = content.replaceAll('\r\n', '\n').trim();
     final List<String> blocks = normalized.split(RegExp(r'\n\s*\n'));
-    final timeRegex = RegExp(r'(\d{1,2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[.,]\d{3})');
+    final timeRegex = RegExp(
+      r'(\d{1,2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[.,]\d{3})',
+    );
 
     for (var block in blocks) {
       final lines = block.trim().split('\n');
@@ -795,7 +974,14 @@ class _SrtCaptionFile extends ClosedCaptionFile {
         // Eliminar etiquetas HTML como <i></i> o <b></b>
         text = text.replaceAll(RegExp(r'<[^>]*>'), '');
         if (text.isNotEmpty) {
-          captions.add(Caption(number: captions.length, start: start, end: end, text: text));
+          captions.add(
+            Caption(
+              number: captions.length,
+              start: start,
+              end: end,
+              text: text,
+            ),
+          );
         }
       }
     }
