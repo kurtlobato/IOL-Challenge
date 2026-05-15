@@ -98,6 +98,11 @@ func processSeries(ctx context.Context, st *store.Store, root string, rel string
 		return nil, nil, nil
 	}
 
+	season, episode := parseSeasonEpisode(rel)
+	if season == nil && episode == nil {
+		return nil, nil, nil
+	}
+
 	seriesFolder := parts[0]
 	seriesID := stableID(root, seriesFolder)
 
@@ -143,8 +148,6 @@ func processSeries(ctx context.Context, st *store.Store, root string, rel string
 		}
 	}
 
-	season, episode := parseSeasonEpisode(rel)
-
 	return &seriesID, season, episode
 }
 
@@ -170,20 +173,21 @@ func parseSeasonEpisode(rel string) (*int, *int) {
 		}
 	}
 
-	if season != nil {
-		reEp := regexp.MustCompile(`(?i)(?:episode|capitulo|capítulo|chapter|ep?|c)\s*(?:-|_)?\s*(\d+)`)
-		m := reEp.FindStringSubmatch(base)
-		if len(m) == 2 {
-			e, _ := strconv.Atoi(m[1])
-			return season, &e
-		}
+	reEp := regexp.MustCompile(`(?i)(?:episode|capitulo|capítulo|chapter|ep?|c)\s*(?:-|_)?\s*(\d+)`)
+	m = reEp.FindStringSubmatch(base)
+	if len(m) == 2 {
+		e, _ := strconv.Atoi(m[1])
+		return season, &e
+	}
 
+	if season != nil {
 		reNum := regexp.MustCompile(`\b(\d+)\b`)
 		m = reNum.FindStringSubmatch(base)
 		if len(m) == 2 {
 			e, _ := strconv.Atoi(m[1])
 			return season, &e
 		}
+		return season, nil
 	}
 
 	return nil, nil
